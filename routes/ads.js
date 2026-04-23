@@ -13,6 +13,7 @@ const {
   getAliExpressCategories
 } = require('../services/rapidApi');
 
+// ─── TikTok Ads ────────────────────────────────────────────────────────────────
 router.get('/tiktok', protect, async (req, res) => {
   try {
     const { country = 'US', order = 'impression', period = '30' } = req.query;
@@ -32,6 +33,7 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
   }
 });
 
+// ─── AliExpress ────────────────────────────────────────────────────────────────
 router.get('/aliexpress', protect, async (req, res) => {
   try {
     const { catId = '15', page = 1, currency = 'USD' } = req.query;
@@ -51,13 +53,13 @@ router.get('/aliexpress/categories', protect, async (req, res) => {
   }
 });
 
+// ─── Search ────────────────────────────────────────────────────────────────────
 router.get('/search', protect, searchLimiter, async (req, res) => {
   try {
     const { keyword = '', platform = 'tiktok', country = 'US' } = req.query;
 
-    if (!keyword.trim()) {
+    if (!keyword.trim())
       return res.status(400).json({ success: false, message: 'Keyword daalo' });
-    }
 
     const limitCheck = checkSearchLimit(req.user);
     if (!limitCheck.allowed) {
@@ -73,20 +75,17 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
     if (platform === 'tiktok' || platform === 'all') {
       try {
         const tt = await searchTikTokAds({ keyword, country, order: 'impression', period: '30' });
-        const raw = tt?.data?.data?.materials
-                 || tt?.data?.materials
-                 || tt?.materials
-                 || [];
+        const raw = tt?.data?.data?.materials || tt?.data?.materials || tt?.materials || [];
         if (Array.isArray(raw)) results.push(...raw);
-      } catch(e) { console.error('TikTok search error:', e.message); }
+      } catch (e) { console.error('TikTok search error:', e.message); }
     }
 
-    incrementSearchCount(req.user.email);
+    // FIX: userId pass karo, email nahi
+    await incrementSearchCount(req.user.id);
 
     res.json({
       success: true,
-      keyword,
-      platform,
+      keyword, platform,
       total: results.length,
       remaining: limitCheck.remaining - 1,
       data: results
@@ -97,17 +96,20 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
   }
 });
 
+// ─── Save Ad ───────────────────────────────────────────────────────────────────
 router.post('/save', protect, async (req, res) => {
   try {
     const { adId, adData, folderName = 'Default' } = req.body;
 
-    if (!adId) {
+    if (!adId)
       return res.status(400).json({ success: false, message: 'Ad ID zaroori hai' });
-    }
 
-    const user = findUserById(req.user.id);
+    // FIX: findUserById ab async hai
+    const user = await findUserById(req.user.id);
+    if (!user)
+      return res.status(404).json({ success: false, message: 'User nahi mila' });
 
-    if (user.plan === 'free' && user.savedAds.length >= 50) {
+    if (user.plan === 'free' && (user.savedAds || []).length >= 50) {
       return res.status(403).json({
         success: false,
         message: 'Free plan mein sirf 50 ads. Pro upgrade karo.',
@@ -115,42 +117,49 @@ router.post('/save', protect, async (req, res) => {
       });
     }
 
-    const alreadySaved = user.savedAds.some(a => a.id === adId);
-    if (alreadySaved) {
+    const savedAds = user.savedAds || [];
+    if (savedAds.some(a => a.id === adId))
       return res.status(409).json({ success: false, message: 'Pehle se saved hai' });
-    }
 
-    user.savedAds.push({
-      id: adId,
-      folder: folderName,
-      savedAt: new Date().toISOString(),
-      ...adData
-    });
+    savedAds.push({ id: adId, folder: folderName, savedAt: new Date().toISOString(), ...adData });
 
-    updateUser(user.email, { savedAds: user.savedAds });
-    res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: user.savedAds.length });
+    // FIX: updateUser ab userId leta hai, email nahi
+    await updateUser(req.user.id, { savedAds });
+    res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: savedAds.length });
 
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get('/saved', protect, (req, res) => {
-  const user = findUserById(req.user.id);
-  res.json({ success: true, total: user.savedAds.length, data: user.savedAds });
+// ─── Saved Ads ─────────────────────────────────────────────────────────────────
+router.get('/saved', protect, async (req, res) => {
+  try {
+    const user = await findUserById(req.user.id);
+    const savedAds = user?.savedAds || [];
+    res.json({ success: true, total: savedAds.length, data: savedAds });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
-router.delete('/save/:adId', protect, (req, res) => {
-  const user = findUserById(req.user.id);
-  const before = user.savedAds.length;
-  user.savedAds = user.savedAds.filter(a => a.id !== req.params.adId);
+router.delete('/save/:adId', protect, async (req, res) => {
+  try {
+    const user = await findUserById(req.user.id);
+    if (!user)
+      return res.status(404).json({ success: false, message: 'User nahi mila' });
 
-  if (user.savedAds.length === before) {
-    return res.status(404).json({ success: false, message: 'Ad nahi mili' });
+    const before = (user.savedAds || []).length;
+    const savedAds = (user.savedAds || []).filter(a => a.id !== req.params.adId);
+
+    if (savedAds.length === before)
+      return res.status(404).json({ success: false, message: 'Ad nahi mili' });
+
+    await updateUser(req.user.id, { savedAds });
+    res.json({ success: true, message: 'Ad remove ho gayi' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
-
-  updateUser(user.email, { savedAds: user.savedAds });
-  res.json({ success: true, message: 'Ad remove ho gayi' });
 });
 
 module.exports = router;
