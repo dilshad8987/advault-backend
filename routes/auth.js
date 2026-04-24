@@ -1,14 +1,20 @@
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const admin = require('../utils/firebase');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
 const { botDetection, extractFingerprint } = require('../middleware/botDetection');
 const { protect, invalidateUserCache } = require('../middleware/auth');
 const {
-  registerDevice, removeDevice, getDeviceCount,
+  registerDevice, removeDevice,
   storeRefreshToken, getRefreshToken, deleteRefreshToken
 } = require('../store/db');
+
+// ─── Device → userId mapping ───────────────────────────────────────────────────
+// Ek device pe sirf ek account allowed
+// Key: fingerprint, Value: userId
+const deviceOwner = new Map();
 
 // ================================
 // REGISTER
@@ -24,12 +30,24 @@ router.post('/register', registerLimiter, botDetection, async (req, res) => {
     if (!email.includes('@'))
       return res.status(400).json({ success: false, message: 'Valid email daalo' });
 
+    // Is device pe pehle se koi account hai?
+    const fingerprint = extractFingerprint(req);
+    const existingOwner = deviceOwner.get(fingerprint);
+    if (existingOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'Is device pe pehle se ek account registered hai. Naya account nahi ban sakta.',
+        code: 'DEVICE_ALREADY_REGISTERED'
+      });
+    }
+
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().createUser({ email, password, displayName: name });
     } catch (err) {
       if (err.code === 'auth/email-already-exists')
         return res.status(409).json({ success: false, message: 'Email pehle se registered hai' });
+      console.error('Firebase createUser error:', err.message);
       throw err;
     }
 
@@ -40,11 +58,11 @@ router.post('/register', registerLimiter, botDetection, async (req, res) => {
       searchCount: 0,
       searchResetDate: new Date().toDateString(),
       savedAds: [],
-      devices: [],
       createdAt: new Date().toISOString()
     });
 
-    const fingerprint = extractFingerprint(req);
+    // Device ko is user ke saath permanently bind karo
+    deviceOwner.set(fingerprint, firebaseUser.uid);
     registerDevice(firebaseUser.uid, fingerprint);
 
     const accessToken  = generateAccessToken({ id: firebaseUser.uid, email });
@@ -55,12 +73,16 @@ router.post('/register', registerLimiter, botDetection, async (req, res) => {
       success: true,
       message: 'Account ban gaya!',
       accessToken, refreshToken,
-      user: { id: firebaseUser.uid, name, email, plan: 'free', savedAds: [], createdAt: new Date().toISOString() }
+      user: {
+        id: firebaseUser.uid, name, email,
+        plan: 'free', savedAds: [],
+        createdAt: new Date().toISOString()
+      }
     });
 
   } catch (err) {
     console.error('Register error:', err.message);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Register fail: ' + err.message });
   }
 });
 
@@ -74,6 +96,7 @@ router.post('/login', authLimiter, botDetection, async (req, res) => {
     if (!email || !password)
       return res.status(400).json({ success: false, message: 'Email aur password daalo' });
 
+    // Step 1: Firebase se user check karo
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().getUserByEmail(email);
@@ -81,37 +104,47 @@ router.post('/login', authLimiter, botDetection, async (req, res) => {
       return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
     }
 
-    const fetch = require('node-fetch');
-    const verifyRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${process.env.FIREBASE_WEB_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, returnSecureToken: true })
-      }
-    );
-    const verifyData = await verifyRes.json();
-    if (verifyData.error)
-      return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
+    // Step 2: Password verify karo (axios — node-fetch nahi)
+    const webApiKey = process.env.FIREBASE_WEB_API_KEY;
+    if (!webApiKey) {
+      console.error('FIREBASE_WEB_API_KEY missing!');
+      return res.status(500).json({ success: false, message: 'Server config error' });
+    }
 
+    try {
+      await axios.post(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${webApiKey}`,
+        { email, password, returnSecureToken: true }
+      );
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || '';
+      console.error('Firebase verify error:', msg);
+      if (msg.includes('TOO_MANY_ATTEMPTS'))
+        return res.status(429).json({ success: false, message: 'Bahut zyada attempts. Thodi der baad try karo.' });
+      return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
+    }
+
+    // Step 3: Device check — kya is device pe koi ALAG account registered hai?
+    const fingerprint = extractFingerprint(req);
+    const existingOwner = deviceOwner.get(fingerprint);
+
+    if (existingOwner && existingOwner !== firebaseUser.uid) {
+      return res.status(403).json({
+        success: false,
+        message: 'Is device pe pehle se alag account registered hai. Wahi account use karo.',
+        code: 'DEVICE_TAKEN'
+      });
+    }
+
+    // Step 4: User data fetch karo
     const userDoc = await admin.firestore().collection('users').doc(firebaseUser.uid).get();
     const userData = userDoc.data() || {};
 
-    const fingerprint = extractFingerprint(req);
-    const maxDevices = parseInt(process.env.MAX_DEVICES_PER_USER) || 1;
-
-    const currentCount = getDeviceCount(firebaseUser.uid);
-    const alreadyRegistered = require('../store/db').isDeviceAllowed(firebaseUser.uid, fingerprint);
-
-    if (!alreadyRegistered && currentCount >= maxDevices) {
-      return res.status(403).json({
-        success: false,
-        message: 'Ek account sirf ek device pe login ho sakta hai.',
-        code: 'DEVICE_LIMIT'
-      });
-    }
+    // Device bind karo (agar nahi hai toh)
+    deviceOwner.set(fingerprint, firebaseUser.uid);
     registerDevice(firebaseUser.uid, fingerprint);
 
+    // Step 5: Tokens generate karo
     const accessToken  = generateAccessToken({ id: firebaseUser.uid, email });
     const refreshToken = generateRefreshToken({ id: firebaseUser.uid });
     storeRefreshToken(refreshToken, firebaseUser.uid);
@@ -132,7 +165,7 @@ router.post('/login', authLimiter, botDetection, async (req, res) => {
 
   } catch (err) {
     console.error('Login error:', err.message);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Login fail: ' + err.message });
   }
 });
 
@@ -144,26 +177,29 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success: false, message: 'Email daalo' });
 
+    // Pehle check karo — registered hai ya nahi
     try {
       await admin.auth().getUserByEmail(email);
     } catch {
-      return res.status(404).json({ success: false, message: 'Email registered nahi hai' });
+      // FIX: Success message nahi — clear error batao
+      return res.status(404).json({
+        success: false,
+        message: 'Yeh email registered nahi hai. Pehle account banao.'
+      });
     }
 
-    const fetch = require('node-fetch');
-    const resetRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${process.env.FIREBASE_WEB_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email })
-      }
-    );
-    const resetData = await resetRes.json();
-    if (resetData.error)
-      return res.status(500).json({ success: false, message: 'Email bhejne mein error' });
+    // Registered hai toh reset email bhejo
+    try {
+      await axios.post(
+        `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${process.env.FIREBASE_WEB_API_KEY}`,
+        { requestType: 'PASSWORD_RESET', email }
+      );
+    } catch (err) {
+      console.error('Reset email error:', err.response?.data || err.message);
+      return res.status(500).json({ success: false, message: 'Email bhejne mein error hua. Dobara try karo.' });
+    }
 
-    res.json({ success: true, message: 'Password reset email bhej diya!' });
+    res.json({ success: true, message: 'Password reset email bhej diya! Inbox check karo.' });
 
   } catch (err) {
     console.error('Forgot password error:', err.message);
@@ -184,10 +220,7 @@ router.post('/refresh', async (req, res) => {
     if (!decoded)
       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
 
-    const stored = getRefreshToken(refreshToken);
-    if (!stored)
-      return res.status(401).json({ success: false, message: 'Token expire ho gaya' });
-
+    // Server restart safe — JWT valid hai toh allow karo
     const newAccessToken = generateAccessToken({ id: decoded.id });
     res.json({ success: true, accessToken: newAccessToken });
 
@@ -202,12 +235,17 @@ router.post('/refresh', async (req, res) => {
 router.post('/logout', protect, async (req, res) => {
   try {
     const { refreshToken } = req.body;
-    const fingerprint = req.fingerprint;
     const userId = req.user.id;
+    const fingerprint = req.fingerprint;
 
     if (refreshToken) deleteRefreshToken(refreshToken);
     removeDevice(userId, fingerprint);
     invalidateUserCache(userId);
+
+    // Logout pe device free karo taaki user naya account bana sake
+    if (deviceOwner.get(fingerprint) === userId) {
+      deviceOwner.delete(fingerprint);
+    }
 
     res.json({ success: true, message: 'Logout ho gaye' });
   } catch (err) {
