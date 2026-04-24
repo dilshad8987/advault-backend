@@ -54,6 +54,25 @@ async function getTikTokAdDetails(adId) {
   });
 }
 
+// Ek advertiser ke saare ads fetch karo
+async function getAdvertiserAds(advertiserId, { country = 'US', period = '30' } = {}) {
+  const cacheKey = makeCacheKey('advertiser_ads', { advertiserId, country, period });
+  return getOrFetch(cacheKey, async () => {
+    const res = await client.get('/ads/top/ads', {
+      params: {
+        page: 1,
+        limit: 12,
+        country_code: country,
+        order_by: 'impression',
+        period: period,
+        ad_format: 1,
+        advertiser_id: advertiserId
+      }
+    });
+    return res.data;
+  });
+}
+
 async function searchMetaAds({ keyword = '', country = 'US' }) {
   const cacheKey = makeCacheKey('meta_search', { keyword, country });
   return getOrFetch(cacheKey, async () => {
@@ -117,6 +136,7 @@ async function getAliExpressCategories() {
 module.exports = {
   searchTikTokAds,
   getTikTokAdDetails,
+  getAdvertiserAds,
   searchMetaAds,
   searchGoogleAds,
   getAliExpressHotProducts,

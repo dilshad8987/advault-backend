@@ -7,13 +7,14 @@ const { checkSearchLimit, incrementSearchCount, updateUser, findUserById } = req
 const {
   searchTikTokAds,
   getTikTokAdDetails,
+  getAdvertiserAds,
   searchMetaAds,
   searchGoogleAds,
   getAliExpressHotProducts,
   getAliExpressCategories
 } = require('../services/rapidApi');
 
-// ─── TikTok Ads ────────────────────────────────────────────────────────────────
+// ─── TikTok Ads List ───────────────────────────────────────────────────────────
 router.get('/tiktok', protect, async (req, res) => {
   try {
     const { country = 'US', order = 'impression', period = '30' } = req.query;
@@ -24,10 +25,26 @@ router.get('/tiktok', protect, async (req, res) => {
   }
 });
 
+// ─── TikTok Ad Detail ──────────────────────────────────────────────────────────
 router.get('/tiktok/:adId', protect, async (req, res) => {
   try {
     const result = await getTikTokAdDetails(req.params.adId);
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── Advertiser ke saare ads ───────────────────────────────────────────────────
+router.get('/advertiser/:advertiserId', protect, async (req, res) => {
+  try {
+    const { country = 'US', period = '30' } = req.query;
+    const result = await getAdvertiserAds(req.params.advertiserId, { country, period });
+    const raw = result?.data?.data?.materials
+             || result?.data?.materials
+             || result?.materials
+             || [];
+    res.json({ success: true, data: Array.isArray(raw) ? raw : [] });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -71,7 +88,6 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
     }
 
     let results = [];
-
     if (platform === 'tiktok' || platform === 'all') {
       try {
         const tt = await searchTikTokAds({ keyword, country, order: 'impression', period: '30' });
@@ -80,7 +96,6 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
       } catch (e) { console.error('TikTok search error:', e.message); }
     }
 
-    // FIX: userId pass karo, email nahi
     await incrementSearchCount(req.user.id);
 
     res.json({
@@ -90,7 +105,6 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
       remaining: limitCheck.remaining - 1,
       data: results
     });
-
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -104,7 +118,6 @@ router.post('/save', protect, async (req, res) => {
     if (!adId)
       return res.status(400).json({ success: false, message: 'Ad ID zaroori hai' });
 
-    // FIX: findUserById ab async hai
     const user = await findUserById(req.user.id);
     if (!user)
       return res.status(404).json({ success: false, message: 'User nahi mila' });
@@ -122,11 +135,8 @@ router.post('/save', protect, async (req, res) => {
       return res.status(409).json({ success: false, message: 'Pehle se saved hai' });
 
     savedAds.push({ id: adId, folder: folderName, savedAt: new Date().toISOString(), ...adData });
-
-    // FIX: updateUser ab userId leta hai, email nahi
     await updateUser(req.user.id, { savedAds });
     res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: savedAds.length });
-
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
