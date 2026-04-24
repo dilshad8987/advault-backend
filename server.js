@@ -6,6 +6,9 @@ const morgan = require('morgan');
 
 const app = express();
 
+// Railway reverse proxy ke peeche hai — trust proxy zaroori hai
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10kb' }));
@@ -23,27 +26,18 @@ app.use('/api/ads', require('./routes/ads'));
 app.use('/api/user', require('./routes/user'));
 
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    server: 'AdVault Backend',
-    time: new Date().toISOString()
-  });
+  res.json({ status: 'OK', server: 'AdVault Backend', time: new Date().toISOString() });
 });
 
 app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route nahi mili'
-  });
+  res.status(404).json({ success: false, message: 'Route nahi mili' });
 });
 
 app.use((err, req, res, next) => {
   console.error('Server Error:', err.message);
   res.status(err.status || 500).json({
     success: false,
-    message: process.env.NODE_ENV === 'production'
-      ? 'Server error'
-      : err.message
+    message: process.env.NODE_ENV === 'production' ? 'Server error' : err.message
   });
 });
 

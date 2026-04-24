@@ -1,67 +1,53 @@
 const rateLimit = require('express-rate-limit');
 
+// Railway reverse proxy ke peeche hai — trust proxy zaroori hai
+// Yeh server.js mein set hoga, rateLimiter mein validateIp band karo
+const proxyOptions = {
+  validate: { xForwardedForHeader: false }  // X-Forwarded-For warning band karo
+};
+
 // ================================
 // GLOBAL RATE LIMIT
-// Har IP ke liye
 // ================================
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 300,
-  message: {
-    success: false,
-    message: 'Bahut zyada requests. 15 minute baad try karo.'
-  },
+  message: { success: false, message: 'Bahut zyada requests. 15 minute baad try karo.' },
   standardHeaders: true,
   legacyHeaders: false,
+  ...proxyOptions
 });
 
 // ================================
 // AUTH ROUTES LIMIT
-// Brute force attacks se bachao
 // ================================
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Sirf 10 login attempts
-  message: {
-    success: false,
-    message: 'Bahut zyada login attempts. 15 minute baad try karo.'
-  },
-  skipSuccessfulRequests: true, // Successful login count na karo
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Bahut zyada login attempts. 15 minute baad try karo.' },
+  skipSuccessfulRequests: true,
+  ...proxyOptions
 });
 
 // ================================
-// API SEARCH LIMIT
-// Per user per plan
+// SEARCH LIMIT
 // ================================
 const searchLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 30, // 30 searches per minute max
-  keyGenerator: (req) => {
-    // User ID se limit karo, IP se nahi
-    return req.user ? req.user.id : req.ip;
-  },
-  message: {
-    success: false,
-    message: 'Bahut fast search kar rahe ho. Thoda slow karo.'
-  }
+  windowMs: 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => req.user ? req.user.id : req.ip,
+  message: { success: false, message: 'Bahut fast search kar rahe ho. Thoda slow karo.' },
+  ...proxyOptions
 });
 
 // ================================
 // REGISTRATION LIMIT
-// Spam accounts se bachao
 // ================================
 const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // Ek IP se 5 accounts max per hour
-  message: {
-    success: false,
-    message: 'Bahut zyada accounts banaye. 1 ghante baad try karo.'
-  }
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Bahut zyada accounts banaye. 1 ghante baad try karo.' },
+  ...proxyOptions
 });
 
-module.exports = {
-  globalLimiter,
-  authLimiter,
-  searchLimiter,
-  registerLimiter
-};
+module.exports = { globalLimiter, authLimiter, searchLimiter, registerLimiter };
