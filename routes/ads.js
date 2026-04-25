@@ -51,6 +51,31 @@ router.get('/video/download', protect, async (req, res) => {
   }
 });
 
+// DEBUG: RapidAPI test (no auth needed)
+router.get('/debug-api', async (req, res) => {
+  const axios = require('axios');
+  const KEY  = process.env.RAPIDAPI_KEY;
+  const HOST = process.env.RAPIDAPI_HOST;
+  try {
+    const r = await axios.get('https://' + HOST + '/ads/top/ads', {
+      params: { page:1, limit:3, country_code:'US', order_by:'impression', period:'30', ad_format:1 },
+      headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': HOST }
+    });
+    const d = r.data;
+    res.json({
+      status: 'ok', key_set: !!KEY, host: HOST,
+      response_keys: Object.keys(d),
+      code: d.code, msg: d.msg,
+      data_type: typeof d.data,
+      data_keys: d.data ? Object.keys(d.data) : null,
+      materials_count: d.data && d.data.data && d.data.data.materials ? d.data.data.materials.length : 'N/A',
+      sample: JSON.stringify(d).substring(0, 600)
+    });
+  } catch(err) {
+    res.json({ status: 'error', message: err.message, key_set: !!KEY, host: HOST, resp: err.response && err.response.data });
+  }
+});
+
 // ─── TikTok Ads List ───────────────────────────────────────────────────────────
 router.get('/tiktok', protect, async (req, res) => {
   try {
