@@ -14,6 +14,43 @@ const {
   getAliExpressCategories
 } = require('../services/rapidApi');
 
+// ─── Video Download Proxy ──────────────────────────────────────────────────────
+// CORS bypass: frontend direct URL se download nahi kar sakta, backend proxy karta hai
+router.get('/video/download', protect, async (req, res) => {
+  const { url, filename = 'ad-video.mp4' } = req.query;
+  if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  try {
+    const axios = require('axios');
+    const videoRes = await axios.get(decodeURIComponent(url), {
+      responseType: 'stream',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tiktok.com/',
+      }
+    });
+
+    const contentType   = videoRes.headers['content-type'] || 'video/mp4';
+    const contentLength = videoRes.headers['content-length'];
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', contentType);
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    res.setHeader('Cache-Control', 'no-cache');
+
+    videoRes.data.pipe(res);
+
+    videoRes.data.on('error', (err) => {
+      console.error('Video stream error:', err.message);
+      if (!res.headersSent) res.status(500).json({ success: false, message: 'Stream error' });
+    });
+  } catch (err) {
+    console.error('Video download error:', err.message);
+    res.status(500).json({ success: false, message: 'Video download fail: ' + err.message });
+  }
+});
+
 // ─── TikTok Ads List ───────────────────────────────────────────────────────────
 router.get('/tiktok', protect, async (req, res) => {
   try {
