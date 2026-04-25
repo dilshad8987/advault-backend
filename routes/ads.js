@@ -14,6 +14,63 @@ const {
   getAliExpressCategories
 } = require('../services/rapidApi');
 
+// ─── Video Stream Proxy (CORS bypass + Range support for seeking) ──────────────
+router.get('/video/stream', async (req, res) => {
+  // Token query param se bhi accept karo (video tag headers nahi bhej sakta)
+  if (!req.headers.authorization && req.query.token) {
+    req.headers.authorization = 'Bearer ' + req.query.token;
+  }
+  // Auth check
+  const jwt = require('jsonwebtoken');
+  try {
+    jwt.verify(req.query.token || (req.headers.authorization || '').replace('Bearer ', ''), process.env.JWT_SECRET);
+  } catch(e) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  try {
+    const axios = require('axios');
+    const decodedUrl = decodeURIComponent(url);
+    const rangeHeader = req.headers['range'];
+
+    const upstreamHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': 'https://www.tiktok.com/',
+      'Origin': 'https://www.tiktok.com',
+      'Accept': '*/*',
+    };
+    if (rangeHeader) upstreamHeaders['Range'] = rangeHeader;
+
+    const videoRes = await axios.get(decodedUrl, {
+      responseType: 'stream',
+      timeout: 30000,
+      headers: upstreamHeaders,
+    });
+
+    const status      = videoRes.status === 206 ? 206 : 200;
+    const contentType = videoRes.headers['content-type'] || 'video/mp4';
+
+    const responseHeaders = {
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=3600',
+    };
+    if (videoRes.headers['content-length'])       responseHeaders['Content-Length']       = videoRes.headers['content-length'];
+    if (videoRes.headers['content-range'])        responseHeaders['Content-Range']        = videoRes.headers['content-range'];
+
+    res.writeHead(status, responseHeaders);
+    videoRes.data.pipe(res);
+    videoRes.data.on('error', () => { if (!res.writableEnded) res.end(); });
+    req.on('close', () => { videoRes.data.destroy(); });
+  } catch (err) {
+    console.error('Video stream error:', err.message);
+    if (!res.headersSent) res.status(502).json({ success: false, message: 'Video stream fail: ' + err.message });
+  }
+});
+
 // ─── Video Download Proxy ──────────────────────────────────────────────────────
 // CORS bypass: frontend direct URL se download nahi kar sakta, backend proxy karta hai
 router.get('/video/download', protect, async (req, res) => {
@@ -48,31 +105,6 @@ router.get('/video/download', protect, async (req, res) => {
   } catch (err) {
     console.error('Video download error:', err.message);
     res.status(500).json({ success: false, message: 'Video download fail: ' + err.message });
-  }
-});
-
-// DEBUG: RapidAPI test (no auth needed)
-router.get('/debug-api', async (req, res) => {
-  const axios = require('axios');
-  const KEY  = process.env.RAPIDAPI_KEY;
-  const HOST = process.env.RAPIDAPI_HOST;
-  try {
-    const r = await axios.get('https://' + HOST + '/ads/top/ads', {
-      params: { page:1, limit:3, country_code:'US', order_by:'impression', period:'30', ad_format:1 },
-      headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': HOST }
-    });
-    const d = r.data;
-    res.json({
-      status: 'ok', key_set: !!KEY, host: HOST,
-      response_keys: Object.keys(d),
-      code: d.code, msg: d.msg,
-      data_type: typeof d.data,
-      data_keys: d.data ? Object.keys(d.data) : null,
-      materials_count: d.data && d.data.data && d.data.data.materials ? d.data.data.materials.length : 'N/A',
-      sample: JSON.stringify(d).substring(0, 600)
-    });
-  } catch(err) {
-    res.json({ status: 'error', message: err.message, key_set: !!KEY, host: HOST, resp: err.response && err.response.data });
   }
 });
 
