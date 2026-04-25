@@ -2,6 +2,18 @@ const express = require('express');
 const router  = express.Router();
 
 const { protect }      = require('../middleware/auth');
+
+// ─── TikTok Scraper API Client ────────────────────────────────────────────────
+const axios = require('axios');
+const tikScraperClient = axios.create({
+  baseURL: 'https://free-tiktok-api-scraper-mobile-version.p.rapidapi.com/tok/v1',
+  headers: {
+    'x-rapidapi-key':  process.env.TIKTOK_SCRAPER_KEY,
+    'x-rapidapi-host': 'free-tiktok-api-scraper-mobile-version.p.rapidapi.com',
+    'Content-Type':    'application/json'
+  },
+  timeout: 12000
+});
 const { searchLimiter } = require('../middleware/rateLimiter');
 const { checkSearchLimit, incrementSearchCount, updateUser, findUserById } = require('../store/db');
 const {
@@ -96,6 +108,54 @@ router.get('/video/download', protect, async (req, res) => {
   } catch(err) {
     console.error('Video download error:', err.message);
     res.status(500).json({ success:false, message:'Video download fail: ' + err.message });
+  }
+});
+
+// ─── TikTok Video URL Fetch (via scraper API) ────────────────────────────────
+// Ad ke video_info.vid se direct playable URL fetch karta hai
+router.get('/video/url', protect, async (req, res) => {
+  const { video_id } = req.query;
+  if (!video_id) return res.status(400).json({ success:false, message:'video_id zaroori hai' });
+
+  try {
+    const axios = require('axios');
+    // Try multiple param names — different API versions use different keys
+    let playUrl = null;
+    let coverUrl = null;
+
+    try {
+      const r = await tikScraperClient.get('/video_detail/', { params: { aweme_id: video_id } });
+      const d = r.data;
+      // Response structure: data.aweme_detail.video.play_addr.url_list[0]
+      const detail = d?.data?.aweme_detail || d?.aweme_detail || d?.data || d;
+      playUrl  = detail?.video?.play_addr?.url_list?.[0]
+               || detail?.video?.download_addr?.url_list?.[0]
+               || detail?.video?.bit_rate?.[0]?.play_addr?.url_list?.[0]
+               || null;
+      coverUrl = detail?.video?.cover?.url_list?.[0]
+               || detail?.video?.origin_cover?.url_list?.[0]
+               || null;
+    } catch(e1) {
+      // Try with video_id param
+      try {
+        const r2 = await tikScraperClient.get('/video_detail/', { params: { video_id } });
+        const d2 = r2.data;
+        const detail2 = d2?.data?.aweme_detail || d2?.aweme_detail || d2?.data || d2;
+        playUrl  = detail2?.video?.play_addr?.url_list?.[0] || null;
+        coverUrl = detail2?.video?.cover?.url_list?.[0] || null;
+      } catch(e2) {
+        console.error('video_detail both params failed:', e2.message);
+      }
+    }
+
+    if (!playUrl) {
+      return res.status(404).json({ success:false, message:'Video URL nahi mili', video_id });
+    }
+
+    res.json({ success:true, play_url: playUrl, cover_url: coverUrl });
+  } catch(err) {
+    console.error('Video URL fetch error:', err.message);
+    res.status(500).json({ success:false, message: err.message });
   }
 });
 
