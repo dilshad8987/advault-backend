@@ -152,23 +152,27 @@ router.get('/video/url', protect, async (req, res) => {
       }
     }
 
-    // Strategy 2: Ad Detail API se tiktok_item_url nikalo, phir play URL fetch karo
+    // Strategy 2: Ad Detail API se video_url object nikalo
     if (!playUrl) {
       try {
         const detailRes = await ttVideoClient.get('/ads/top/ads/detail', {
           params: { material_id: video_id }
         });
         const d = detailRes.data?.data || detailRes.data;
-        const itemUrl = d?.tiktok_item_url || d?.share_url || d?.item_url || null;
-        if (itemUrl) {
-          console.log('Got tiktok_item_url from detail:', itemUrl);
-          const r2 = await ttVideoClient.get('/', {
-            params: { url: itemUrl, hd: 1 }
-          });
-          const d2 = r2.data?.data || r2.data;
-          playUrl  = d2?.play || d2?.hdplay || d2?.wmplay || null;
-          coverUrl = d2?.cover || d2?.origin_cover || d?.video_info?.cover || null;
-          if (playUrl) console.log('✅ Got play URL from detail+fetch strategy');
+        const videoUrlObj = d?.video_info?.video_url;
+        coverUrl = d?.video_info?.cover || null;
+
+        if (videoUrlObj && typeof videoUrlObj === 'object') {
+          // Quality preference: 720p > 540p > 480p > 360p > first available
+          playUrl = videoUrlObj['720p']
+                 || videoUrlObj['540p']
+                 || videoUrlObj['480p']
+                 || videoUrlObj['360p']
+                 || Object.values(videoUrlObj)[0]
+                 || null;
+          if (playUrl) console.log('✅ Got play URL from video_url object');
+        } else if (typeof videoUrlObj === 'string' && videoUrlObj) {
+          playUrl = videoUrlObj;
         }
       } catch (e2) {
         console.log('Detail strategy failed:', e2.message);
