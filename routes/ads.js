@@ -159,6 +159,77 @@ router.get('/video/url', protect, async (req, res) => {
   }
 });
 
+
+// ─── AI Ad Analysis (RapidAPI Claude) ────────────────────────────────────────
+router.post('/ai/analyze', protect, async (req, res) => {
+  const { adData } = req.body;
+  if (!adData) return res.status(400).json({ success:false, message:'adData zaroori hai' });
+
+  const RAPID_KEY = process.env.RAPIDAPI_AI_KEY || process.env.RAPIDAPI_KEY;
+  if (!RAPID_KEY) return res.status(500).json({ success:false, message:'RAPIDAPI_AI_KEY Railway mein set karo' });
+
+  const {
+    likes=0, comments=0, ctr=0, impression=0, cost=0,
+    title='', objective='', industry='', runDays=0,
+    isActive=false, countries=[]
+  } = adData;
+
+  const prompt = `You are an expert TikTok advertising analyst. Analyze this ad and return ONLY valid JSON — no markdown, no explanation.
+
+AD DATA:
+- Title: "${title}"
+- Objective: ${objective||'unknown'}
+- Industry: ${industry||'unknown'}
+- Likes: ${likes}
+- Comments: ${comments}
+- CTR: ${ctr}%
+- Impressions: ${impression}
+- Spend: $${cost}
+- Days Running: ${runDays}
+- Still Active: ${isActive}
+- Countries: ${Array.isArray(countries)?countries.join(', '):'unknown'}
+
+Return ONLY this JSON (no markdown, no extra text):
+{"overall_score":<0-100>,"verdict":"<WINNING|AVERAGE|WEAK|VIRAL>","scores":{"hook_strength":<0-25>,"engagement_rate":<0-25>,"spend_efficiency":<0-25>,"longevity":<0-25>},"hook_analysis":"<2 sentences>","target_audience":"<1-2 sentences>","cta_analysis":"<1-2 sentences>","winning_elements":["<item1>","<item2>","<item3>"],"weak_points":["<item1>","<item2>"],"recommendations":["<action1>","<action2>","<action3>"],"competitor_threat":"<LOW|MEDIUM|HIGH>","scaling_potential":"<LOW|MEDIUM|HIGH>","best_for":"<1 sentence>"}`;
+
+  try {
+    const response = await axios.post(
+      'https://open-ai21.p.rapidapi.com/claude3',
+      {
+        messages: [{ role: 'user', content: prompt }],
+        web_access: false
+      },
+      {
+        headers: {
+          'Content-Type':    'application/json',
+          'x-rapidapi-host': process.env.RAPIDAPI_AI_HOST || 'open-ai21.p.rapidapi.com',
+          'x-rapidapi-key':  RAPID_KEY
+        },
+        timeout: 30000
+      }
+    );
+
+    // Response: { result: "...", status: true }
+    const raw  = response.data?.result || response.data?.message || response.data?.content || '';
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const clean = text.replace(/```json|```/g, '').trim();
+
+    // Extract JSON from response
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('JSON nahi mila response mein');
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    res.json({ success:true, analysis: parsed });
+
+  } catch(err) {
+    console.error('AI analyze error:', err.response?.data || err.message);
+    res.status(500).json({
+      success:  false,
+      message:  'AI analysis fail: ' + (err.response?.data?.message || err.message)
+    });
+  }
+});
+
 // DEBUG: RapidAPI test (no auth) — production mein hatana
 router.get('/debug-api', async (req, res) => {
   const axios = require('axios');
