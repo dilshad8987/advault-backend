@@ -119,7 +119,9 @@ router.get('/video/download', protect, async (req, res) => {
 const videoUrlCache = new Map();
 
 router.get('/video/url', protect, async (req, res) => {
-  const { video_id } = req.query;
+  // video_id = ad ka material_id/ad_id
+  // vid_url  = ad.video_info.vid (direct CDN URL — agar available ho)
+  const { video_id, vid_url } = req.query;
   if (!video_id) return res.status(400).json({ success: false, message: 'video_id zaroori hai' });
 
   // Cache check — 1 ghante tak valid
@@ -129,20 +131,31 @@ router.get('/video/url', protect, async (req, res) => {
   }
 
   try {
-    // TikTok URL banao video_id se
-    const tiktokUrl = `https://www.tiktok.com/@tiktok/video/${video_id}`;
+    let playUrl  = null;
+    let coverUrl = null;
 
-    const r = await ttVideoClient.get('/', {
-      params: { url: tiktokUrl, hd: 1 }
-    });
+    // Strategy 1: Ad Detail API se fresh video URL lo (material_id se)
+    try {
+      const detailRes = await ttVideoClient.get('/ads/top/ads/detail', {
+        params: { material_id: video_id }
+      });
+      const d = detailRes.data?.data || detailRes.data;
+      // Ad detail se video URL nikalo
+      playUrl  = d?.video_info?.vid
+               || d?.video_url
+               || d?.video?.play_addr?.url_list?.[0]
+               || null;
+      coverUrl = d?.video_info?.cover || d?.cover || null;
+      if (playUrl) console.log('Video URL from ad detail:', video_id);
+    } catch (e1) {
+      console.log('Ad detail fetch failed, trying vid_url fallback:', e1.message);
+    }
 
-    const d = r.data?.data || r.data;
-
-    const playUrl  = d?.play       // no-watermark
-                   || d?.hdplay    // HD version
-                   || d?.wmplay    // watermark fallback
-                   || null;
-    const coverUrl = d?.cover || d?.origin_cover || null;
+    // Strategy 2: vid_url directly use karo (frontend se pass kiya hua)
+    if (!playUrl && vid_url) {
+      playUrl = decodeURIComponent(vid_url);
+      console.log('Using vid_url directly:', video_id);
+    }
 
     if (!playUrl) {
       return res.status(404).json({ success: false, message: 'Video URL nahi mili', video_id });
