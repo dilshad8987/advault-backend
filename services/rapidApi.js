@@ -1,78 +1,72 @@
 const axios = require('axios');
 const { makeCacheKey, getOrFetch } = require('./cache');
 
-// ─── tiktok-video-no-watermark2 — single client for everything ───────────────
-const TT_KEY  = process.env.TIKTOK_VIDEO_KEY || process.env.RAPIDAPI_KEY;
-const TT_HOST = 'tiktok-video-no-watermark2.p.rapidapi.com';
+const KEY      = process.env.RAPIDAPI_KEY;
+const HOST     = process.env.RAPIDAPI_HOST;
+const ALI_HOST = process.env.ALIEXPRESS_HOST;
+const ALI_KEY  = process.env.ALIEXPRESS_KEY || process.env.RAPIDAPI_KEY; // AliExpress alag key
 
-const ttClient = axios.create({
-  baseURL: `https://${TT_HOST}`,
+const client = axios.create({
+  baseURL: 'https://' + HOST,
   headers: {
-    'x-rapidapi-key':  TT_KEY,
-    'x-rapidapi-host': TT_HOST,
-    'Content-Type':    'application/json'
+    'x-rapidapi-key': KEY,
+    'x-rapidapi-host': HOST,
+    'Content-Type': 'application/json'
   },
   timeout: 15000
 });
-
-// ─── AliExpress client (unchanged) ───────────────────────────────────────────
-const ALI_HOST = process.env.ALIEXPRESS_HOST || 'free-aliexpress-api.p.rapidapi.com';
-const ALI_KEY  = process.env.RAPIDAPI_KEY;
 
 const aliClient = axios.create({
-  baseURL: `https://${ALI_HOST}`,
+  baseURL: 'https://' + ALI_HOST,
   headers: {
-    'x-rapidapi-key':  ALI_KEY,
+    'x-rapidapi-key': ALI_KEY,  // AliExpress ki apni key
     'x-rapidapi-host': ALI_HOST,
-    'Content-Type':    'application/json'
+    'Content-Type': 'application/json'
   },
   timeout: 15000
 });
 
-// ─── 1. Top Ads List ──────────────────────────────────────────────────────────
-// GET /ads/top/ads
-// Params: page, limit, period, country_code, ad_language, order_by
 async function searchTikTokAds({ country = 'US', order = 'impression', keyword = '', period = '30' }) {
   const cacheKey = makeCacheKey('tiktok_search', { country, order, keyword, period });
   return getOrFetch(cacheKey, async () => {
-    const params = {
-      page:         1,
-      limit:        20,
-      period:       period,
-      country_code: country,
-      ad_language:  'en',
-      order_by:     order,
-    };
-    if (keyword && keyword.trim()) params.keyword = keyword.trim();
-    const res = await ttClient.get('/ads/top/ads', { params });
-    return res.data;
-  });
-}
-
-// ─── 2. Ad Detail ─────────────────────────────────────────────────────────────
-// GET /ads/top/ads/detail?material_id=xxx
-async function getTikTokAdDetails(materialId) {
-  const cacheKey = 'tiktok_detail_' + materialId;
-  return getOrFetch(cacheKey, async () => {
-    const res = await ttClient.get('/ads/top/ads/detail', {
-      params: { material_id: materialId }
+    const res = await client.get('/ads/top/ads', {
+      params: {
+        page: 1,
+        limit: 20,
+        country_code: country,
+        ad_language: 'en',
+        order_by: order,
+        period: period,
+        ad_format: 1,
+        keyword: keyword
+      }
     });
     return res.data;
   });
 }
 
-// ─── 3. Advertiser ke saare ads ───────────────────────────────────────────────
-// GET /ads/top/ads (advertiser_id filter)
+async function getTikTokAdDetails(adId) {
+  const cacheKey = 'tiktok_detail_' + adId;
+  return getOrFetch(cacheKey, async () => {
+    const res = await client.get('/ads/detail', {
+      params: { ad_id: adId }
+    });
+    return res.data;
+  });
+}
+
+// Ek advertiser ke saare ads fetch karo
 async function getAdvertiserAds(advertiserId, { country = 'US', period = '30' } = {}) {
   const cacheKey = makeCacheKey('advertiser_ads', { advertiserId, country, period });
   return getOrFetch(cacheKey, async () => {
-    const res = await ttClient.get('/ads/top/ads', {
+    const res = await client.get('/ads/top/ads', {
       params: {
-        page:          1,
-        limit:         12,
-        period:        period,
-        country_code:  country,
-        order_by:      'impression',
+        page: 1,
+        limit: 12,
+        country_code: country,
+        order_by: 'impression',
+        period: period,
+        ad_format: 1,
         advertiser_id: advertiserId
       }
     });
@@ -80,91 +74,62 @@ async function getAdvertiserAds(advertiserId, { country = 'US', period = '30' } 
   });
 }
 
-// ─── 4. Top Products ──────────────────────────────────────────────────────────
-// GET /ads/top/products
-// Params: page, limit, country_code, ecom_type, order_by, order_type,
-//         first_ecom_category_id, period_type, last, week, month
-async function getTopProducts({
-  page       = 1,
-  limit      = 20,
-  country    = 'US',
-  ecomType   = 'l3',
-  orderBy    = 'post',
-  orderType  = 'desc',
-  categoryId = '',
-  periodType = 'last',
-  last       = 7,
-} = {}) {
-  const cacheKey = makeCacheKey('top_products', { page, country, ecomType, orderBy, last });
+async function searchMetaAds({ keyword = '', country = 'US' }) {
+  const cacheKey = makeCacheKey('meta_search', { keyword, country });
   return getOrFetch(cacheKey, async () => {
-    const params = {
-      page,
-      limit,
-      country_code:  country,
-      ecom_type:     ecomType,
-      order_by:      orderBy,
-      order_type:    orderType,
-      period_type:   periodType,
-      last,
-    };
-    if (categoryId) params.first_ecom_category_id = categoryId;
-    const res = await ttClient.get('/ads/top/products', { params });
-    return res.data;
-  });
-}
-
-// ─── 5. Product Detail ────────────────────────────────────────────────────────
-// GET /ads/top/products/detail?id=xxx&country_code=US&period_type=last&last=7
-async function getProductDetail(productId, { country = 'US', periodType = 'last', last = 7 } = {}) {
-  const cacheKey = makeCacheKey('product_detail', { productId, country, last });
-  return getOrFetch(cacheKey, async () => {
-    const res = await ttClient.get('/ads/top/products/detail', {
+    const res = await client.get('/ads/top/ads', {
       params: {
-        id:          productId,
+        page: 1,
+        limit: 20,
         country_code: country,
-        period_type:  periodType,
-        last,
+        ad_language: 'en',
+        order_by: 'impression',
+        period: 30,
+        ad_format: 1,
+        keyword: keyword
       }
     });
     return res.data;
   });
 }
 
-// ─── 6. Video Info (URL + no-watermark) ──────────────────────────────────────
-// GET /?url=https://www.tiktok.com/@user/video/xxx&hd=1
-async function getTikTokVideoInfo(tiktokUrl) {
-  const cacheKey = 'video_info_' + tiktokUrl;
+async function searchGoogleAds({ keyword = '', country = 'US' }) {
+  const cacheKey = makeCacheKey('google_search', { keyword, country });
   return getOrFetch(cacheKey, async () => {
-    const res = await ttClient.get('/', {
-      params: { url: tiktokUrl, hd: 1 }
+    const res = await client.get('/ads/top/ads', {
+      params: {
+        page: 1,
+        limit: 20,
+        country_code: country,
+        order_by: 'impression',
+        period: 30,
+        keyword: keyword
+      }
     });
     return res.data;
-  }, 3600); // 1 hour cache
+  });
 }
 
-// ─── Legacy wrappers (unchanged callers) ─────────────────────────────────────
-async function searchMetaAds({ keyword = '', country = 'US' }) {
-  return searchTikTokAds({ keyword, country, order: 'impression', period: '30' });
-}
-
-async function searchGoogleAds({ keyword = '', country = 'US' }) {
-  return searchTikTokAds({ keyword, country, order: 'impression', period: '30' });
-}
-
-// ─── AliExpress (unchanged) ───────────────────────────────────────────────────
 async function getAliExpressHotProducts({ catId = '15', page = 1, currency = 'USD', keyword = '' }) {
   const cacheKey = makeCacheKey('aliexpress_hot', { catId, page, currency, keyword });
   return getOrFetch(cacheKey, async () => {
-    const params = {
-      cat_id:          catId,
-      sort:            'LAST_VOLUME_DESC',
-      target_currency: currency,
-      target_language: 'EN',
-      page,
-    };
-    if (keyword && keyword.trim()) params.search = keyword.trim();
-    const res = await aliClient.get('/hot_products', { params });
-    return res.data;
+    try {
+      const params = {
+        cat_id: catId,
+        sort: 'LAST_VOLUME_DESC',
+        target_currency: currency,
+        target_language: 'EN',
+        page: parseInt(page) || 1,
+      };
+      if (keyword && keyword.trim()) params.keywords = keyword.trim();
+      console.log('AliExpress API call params:', JSON.stringify(params));
+      const res = await aliClient.get('/hot_products', { params });
+      console.log('AliExpress API response status:', res.status, 'keys:', Object.keys(res.data || {}));
+      return res.data;
+    } catch(err) {
+      console.error('AliExpress API error:', err.response?.status, JSON.stringify(err.response?.data));
+      throw err;
+    }
   });
 }
 
@@ -180,11 +145,8 @@ module.exports = {
   searchTikTokAds,
   getTikTokAdDetails,
   getAdvertiserAds,
-  getTopProducts,
-  getProductDetail,
-  getTikTokVideoInfo,
   searchMetaAds,
   searchGoogleAds,
   getAliExpressHotProducts,
-  getAliExpressCategories,
+  getAliExpressCategories
 };
