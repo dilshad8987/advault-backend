@@ -112,37 +112,50 @@ router.get('/video/download', protect, async (req, res) => {
 });
 
 // ─── TikTok Video URL Fetch (via scraper API) ────────────────────────────────
-// Ad ke video_info.vid se direct playable URL fetch karta hai
+const videoUrlCache = new Map(); // Simple in-memory cache
+
 router.get('/video/url', protect, async (req, res) => {
   const { video_id } = req.query;
   if (!video_id) return res.status(400).json({ success:false, message:'video_id zaroori hai' });
 
+  // Cache check — 1 ghante tak valid
+  const cached = videoUrlCache.get(video_id);
+  if (cached && Date.now() - cached.ts < 3600000) {
+    return res.json({ success:true, play_url: cached.url, from_cache: true });
+  }
+
+  // Agar TIKTOK_SCRAPER_KEY set nahi hai toh skip karo
+  if (!process.env.TIKTOK_SCRAPER_KEY) {
+    return res.status(404).json({ success:false, message:'TIKTOK_SCRAPER_KEY nahi hai', video_id });
+  }
+
   try {
-    const axios = require('axios');
-    // Try multiple param names — different API versions use different keys
     let playUrl = null;
     let coverUrl = null;
 
     try {
-      const r = await tikScraperClient.get('/video_detail/', { params: { aweme_id: video_id } });
+      const r = await tikScraperClient.get('/video_detail/', {
+        params: { aweme_id: video_id },
+        timeout: 10000
+      });
       const d = r.data;
-      // Response structure: data.aweme_detail.video.play_addr.url_list[0]
       const detail = d?.data?.aweme_detail || d?.aweme_detail || d?.data || d;
       playUrl  = detail?.video?.play_addr?.url_list?.[0]
                || detail?.video?.download_addr?.url_list?.[0]
                || detail?.video?.bit_rate?.[0]?.play_addr?.url_list?.[0]
                || null;
-      coverUrl = detail?.video?.cover?.url_list?.[0]
-               || detail?.video?.origin_cover?.url_list?.[0]
-               || null;
+      coverUrl = detail?.video?.cover?.url_list?.[0] || null;
     } catch(e1) {
-      // Try with video_id param
+      if (e1.response?.status === 429) {
+        // Rate limit — cache empty result thodi der ke liye
+        console.error('video_detail 429 rate limit hit');
+        return res.status(429).json({ success:false, message:'Rate limit — thodi der baad try karo', video_id });
+      }
       try {
-        const r2 = await tikScraperClient.get('/video_detail/', { params: { video_id } });
+        const r2 = await tikScraperClient.get('/video_detail/', { params: { video_id }, timeout: 10000 });
         const d2 = r2.data;
         const detail2 = d2?.data?.aweme_detail || d2?.aweme_detail || d2?.data || d2;
-        playUrl  = detail2?.video?.play_addr?.url_list?.[0] || null;
-        coverUrl = detail2?.video?.cover?.url_list?.[0] || null;
+        playUrl = detail2?.video?.play_addr?.url_list?.[0] || null;
       } catch(e2) {
         console.error('video_detail both params failed:', e2.message);
       }
@@ -152,6 +165,8 @@ router.get('/video/url', protect, async (req, res) => {
       return res.status(404).json({ success:false, message:'Video URL nahi mili', video_id });
     }
 
+    // Cache mein save karo
+    videoUrlCache.set(video_id, { url: playUrl, ts: Date.now() });
     res.json({ success:true, play_url: playUrl, cover_url: coverUrl });
   } catch(err) {
     console.error('Video URL fetch error:', err.message);
@@ -226,6 +241,38 @@ Return ONLY this JSON (no markdown, no extra text):
     res.status(500).json({
       success:  false,
       message:  'AI analysis fail: ' + (err.response?.data?.message || err.message)
+    });
+  }
+});
+
+// DEBUG: AI API test (no auth) — test karo browser se
+router.get('/debug-ai', async (req, res) => {
+  const KEY = process.env.RAPIDAPI_AI_KEY || process.env.RAPIDAPI_KEY;
+  try {
+    const r = await axios.post(
+      'https://open-ai21.p.rapidapi.com/claude3',
+      { messages:[{ role:'user', content:'Say: {"test":"ok","status":"working"}' }], web_access:false },
+      { headers:{
+          'Content-Type':    'application/json',
+          'x-rapidapi-key':  KEY,
+          'x-rapidapi-host': 'open-ai21.p.rapidapi.com'
+        }, timeout:15000
+      }
+    );
+    res.json({
+      status:       'ok',
+      key_set:      !!KEY,
+      key_prefix:   KEY ? KEY.substring(0,8)+'...' : 'NOT SET',
+      raw_response: r.data,
+      response_keys: r.data ? Object.keys(r.data) : []
+    });
+  } catch(err) {
+    res.json({
+      status:       'error',
+      key_set:      !!KEY,
+      key_prefix:   KEY ? KEY.substring(0,8)+'...' : 'NOT SET',
+      error:        err.message,
+      api_response: err.response?.data
     });
   }
 });
