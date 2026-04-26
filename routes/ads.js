@@ -121,7 +121,7 @@ const videoUrlCache = new Map();
 router.get('/video/url', protect, async (req, res) => {
   // video_id = ad ka material_id/ad_id
   // vid_url  = ad.video_info.vid (direct CDN URL — agar available ho)
-  const { video_id, vid_url } = req.query;
+  const { video_id, vid_url, tiktok_url } = req.query;
   if (!video_id) return res.status(400).json({ success: false, message: 'video_id zaroori hai' });
 
   // Cache check — 1 ghante tak valid
@@ -134,34 +134,52 @@ router.get('/video/url', protect, async (req, res) => {
     let playUrl  = null;
     let coverUrl = null;
 
-    // Strategy 1: Ad Detail API se fresh video URL lo (material_id se)
-    try {
-      const detailRes = await ttVideoClient.get('/ads/top/ads/detail', {
-        params: { material_id: video_id }
-      });
-      const d = detailRes.data?.data || detailRes.data;
-      // Ad detail se video URL nikalo
-      playUrl  = d?.video_info?.vid
-               || d?.video_url
-               || d?.video?.play_addr?.url_list?.[0]
-               || null;
-      coverUrl = d?.video_info?.cover || d?.cover || null;
-      if (playUrl) console.log('Video URL from ad detail:', video_id);
-    } catch (e1) {
-      console.log('Ad detail fetch failed, trying vid_url fallback:', e1.message);
+    // Strategy 1: tiktok_url se GET /?url=...&hd=1 — fresh no-watermark URL
+    // tiktok_url = frontend se pass hota hai (ad.tiktok_item_url ya constructed)
+    if (tiktok_url) {
+      try {
+        const decodedTiktokUrl = decodeURIComponent(tiktok_url);
+        console.log('Fetching video via tiktok_url:', decodedTiktokUrl);
+        const r = await ttVideoClient.get('/', {
+          params: { url: decodedTiktokUrl, hd: 1 }
+        });
+        const d = r.data?.data || r.data;
+        playUrl  = d?.play || d?.hdplay || d?.wmplay || null;
+        coverUrl = d?.cover || d?.origin_cover || null;
+        if (playUrl) console.log('✅ Got play URL from tiktok_url strategy');
+      } catch (e1) {
+        console.log('tiktok_url strategy failed:', e1.response?.status, e1.message);
+      }
     }
 
-    // Strategy 2: vid_url directly use karo (frontend se pass kiya hua)
-    if (!playUrl && vid_url) {
-      playUrl = decodeURIComponent(vid_url);
-      console.log('Using vid_url directly:', video_id);
+    // Strategy 2: Ad Detail API se tiktok_item_url nikalo, phir play URL fetch karo
+    if (!playUrl) {
+      try {
+        const detailRes = await ttVideoClient.get('/ads/top/ads/detail', {
+          params: { material_id: video_id }
+        });
+        const d = detailRes.data?.data || detailRes.data;
+        const itemUrl = d?.tiktok_item_url || d?.share_url || d?.item_url || null;
+        if (itemUrl) {
+          console.log('Got tiktok_item_url from detail:', itemUrl);
+          const r2 = await ttVideoClient.get('/', {
+            params: { url: itemUrl, hd: 1 }
+          });
+          const d2 = r2.data?.data || r2.data;
+          playUrl  = d2?.play || d2?.hdplay || d2?.wmplay || null;
+          coverUrl = d2?.cover || d2?.origin_cover || d?.video_info?.cover || null;
+          if (playUrl) console.log('✅ Got play URL from detail+fetch strategy');
+        }
+      } catch (e2) {
+        console.log('Detail strategy failed:', e2.message);
+      }
     }
 
     if (!playUrl) {
-      return res.status(404).json({ success: false, message: 'Video URL nahi mili', video_id });
+      return res.status(404).json({ success: false, message: 'Video URL nahi mili — TikTok pe dekho', video_id });
     }
 
-    // Cache mein save karo
+    // Cache mein save karo (30 min — URLs expire hote hain)
     videoUrlCache.set(video_id, { url: playUrl, cover: coverUrl, ts: Date.now() });
     res.json({ success: true, play_url: playUrl, cover_url: coverUrl });
 
@@ -377,19 +395,44 @@ router.delete('/save/:adId', protect, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// ─── DEBUG (development only) ─────────────────────────────────────────────────
-if (process.env.NODE_ENV !== 'production') {
-  router.get('/debug-api', async (req, res) => {
-    const KEY = TT_KEY;
-    try {
-      const r = await ttVideoClient.get('/ads/top/ads', {
-        params: { page: 1, limit: 3, country_code: 'US', order_by: 'impression', period: '30' }
-      });
-      res.json({ status: 'ok', key_prefix: KEY?.substring(0, 8) + '...', data: r.data });
-    } catch (err) {
-      res.json({ status: 'error', message: err.message, api_response: err.response?.data });
+// ─── DEBUG — production mein bhi chalega temporarily ─────────────────────────
+router.get('/debug-api', async (req, res) => {
+  try {
+    // Step 1: Top ads fetch karo
+    const r = await ttVideoClient.get('/ads/top/ads', {
+      params: { page: 1, limit: 1, country_code: 'US', order_by: 'impression', period: '30' }
+    });
+    const materials = r.data?.data?.data?.materials || r.data?.data?.materials || [];
+    const firstAd   = materials[0] || {};
+    const materialId = firstAd.material_id || firstAd.id || '';
+
+    // Step 2: Ad detail fetch karo
+    let detailData = null;
+    if (materialId) {
+      try {
+        const d = await ttVideoClient.get('/ads/top/ads/detail', {
+          params: { material_id: materialId }
+        });
+        detailData = d.data?.data || d.data;
+      } catch(e) { detailData = { error: e.message }; }
     }
-  });
-}
+
+    res.json({
+      status: 'ok',
+      first_ad_keys: Object.keys(firstAd),
+      video_info_keys: firstAd.video_info ? Object.keys(firstAd.video_info) : 'NO video_info',
+      tiktok_item_url: firstAd.tiktok_item_url || 'NOT FOUND',
+      share_url:       firstAd.share_url       || 'NOT FOUND',
+      item_url:        firstAd.item_url        || 'NOT FOUND',
+      video_vid:       firstAd.video_info?.vid ? firstAd.video_info.vid.substring(0, 80) + '...' : 'NOT FOUND',
+      material_id:     materialId,
+      detail_keys:     detailData ? Object.keys(detailData) : [],
+      detail_video_info: detailData?.video_info ? Object.keys(detailData.video_info) : 'NO video_info in detail',
+      detail_tiktok_url: detailData?.tiktok_item_url || detailData?.share_url || 'NOT FOUND in detail',
+    });
+  } catch (err) {
+    res.json({ status: 'error', message: err.message, api_response: err.response?.data });
+  }
+});
 
 module.exports = router;
