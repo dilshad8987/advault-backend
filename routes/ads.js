@@ -429,10 +429,13 @@ router.get('/debug-api', async (req, res) => {
       detail_keys:     detailData ? Object.keys(detailData) : [],
       detail_video_info: detailData?.video_info ? Object.keys(detailData.video_info) : 'NO video_info in detail',
       detail_tiktok_url: detailData?.tiktok_item_url || detailData?.share_url || 'NOT FOUND in detail',
-      // video_url field check
-      first_ad_video_url:   firstAd.video_info?.video_url ? firstAd.video_info.video_url.substring(0,100)+'...' : 'EMPTY',
-      detail_video_url:     detailData?.video_info?.video_url ? detailData.video_info.video_url.substring(0,100)+'...' : 'EMPTY',
-      detail_vid:           detailData?.video_info?.vid || 'EMPTY',
+      // video_url field check — JSON dump karo
+      first_ad_video_url_type:   typeof firstAd.video_info?.video_url,
+      first_ad_video_url_value:  JSON.stringify(firstAd.video_info?.video_url)?.substring(0,200),
+      detail_video_url_type:     typeof detailData?.video_info?.video_url,
+      detail_video_url_value:    JSON.stringify(detailData?.video_info?.video_url)?.substring(0,200),
+      detail_vid_type:           typeof detailData?.video_info?.vid,
+      detail_vid_value:          JSON.stringify(detailData?.video_info?.vid)?.substring(0,200),
     });
   } catch (err) {
     res.json({ status: 'error', message: err.message, api_response: err.response?.data });
