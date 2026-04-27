@@ -4,12 +4,31 @@ const NodeCache = require('node-cache');
 // CACHE SETUP
 // TTL = 1 hour by default
 // ================================
+const TWENTY_FOUR_HOURS = 86400;
+
 const cache = new NodeCache({
-  stdTTL: parseInt(process.env.CACHE_TTL_SECONDS) || 3600,
+  stdTTL: parseInt(process.env.CACHE_TTL_SECONDS) || TWENTY_FOUR_HOURS,
   maxKeys: parseInt(process.env.CACHE_MAX_KEYS) || 1000,
-  checkperiod: 120, // Har 2 min expired keys clean karo
+  checkperiod: 300,
   useClones: false
 });
+
+// Har raat 12 baje cache reset — fresh ads aayengi
+function scheduleMidnightReset() {
+  const now  = new Date();
+  const next = new Date();
+  next.setHours(24, 0, 0, 0);
+  const ms = next - now;
+  setTimeout(() => {
+    console.log('🔄 Midnight cache reset — fresh ads fetch hogi ab');
+    cache.flushAll();
+    scheduleMidnightReset();
+  }, ms);
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  console.log(`⏰ Next cache reset in ${h}h ${m}m (midnight)`);
+}
+scheduleMidnightReset();
 
 // ================================
 // CACHE STATS
