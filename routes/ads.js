@@ -399,6 +399,72 @@ router.delete('/save/:adId', protect, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
+// ─── Related Products ─────────────────────────────────────────────────────────
+// GET /api/ads/related/:adId?industry=xxx&keyword=xxx&country=US&exclude=adId1,adId2
+// Same industry/keyword se similar ads fetch karta hai
+router.get('/related/:adId', protect, async (req, res) => {
+  try {
+    const { adId } = req.params;
+    const {
+      industry = '',
+      keyword  = '',
+      country  = 'US',
+      exclude  = '',   // comma-separated ad IDs jo skip karne hain
+      limit    = 12,
+    } = req.query;
+
+    // Exclude list banao (current ad + brand ads jo already dikh rahe hain)
+    const excludeSet = new Set([adId, ...exclude.split(',').filter(Boolean)]);
+
+    let relatedAds = [];
+
+    // Strategy 1: Industry keyword se search karo
+    const searchQuery = keyword.trim() || industry.trim();
+    if (searchQuery) {
+      try {
+        const res1 = await searchTikTokAds({
+          keyword: searchQuery,
+          country,
+          order:  'impression',
+          period: '30',
+        });
+        const raw = res1?.data?.data?.materials || res1?.data?.materials || res1?.materials || [];
+        if (Array.isArray(raw)) relatedAds.push(...raw);
+      } catch (e) {
+        console.error('Related: keyword search fail:', e.message);
+      }
+    }
+
+    // Strategy 2: Agar keyword se kam results mile toh top ads fetch karo
+    if (relatedAds.length < 6) {
+      try {
+        const res2 = await searchTikTokAds({ country, order: 'impression', period: '30' });
+        const raw2 = res2?.data?.data?.materials || res2?.data?.materials || res2?.materials || [];
+        if (Array.isArray(raw2)) relatedAds.push(...raw2);
+      } catch (e) {
+        console.error('Related: fallback fetch fail:', e.message);
+      }
+    }
+
+    // Duplicates aur current ad hatao
+    const seen = new Set();
+    const filtered = relatedAds
+      .filter(a => {
+        const id = a.id || a.ad_id || a.material_id;
+        if (!id || excludeSet.has(String(id))) return false;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+      .slice(0, parseInt(limit) || 12);
+
+    res.json({ success: true, total: filtered.length, data: filtered });
+  } catch (err) {
+    console.error('Related products error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── DEBUG — production mein bhi chalega temporarily ─────────────────────────
 router.get('/debug-api', async (req, res) => {
   try {
