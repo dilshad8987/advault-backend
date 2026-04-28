@@ -6,7 +6,6 @@ const morgan = require('morgan');
 
 const app = express();
 
-// Railway reverse proxy ke peeche hai — trust proxy zaroori hai
 app.set('trust proxy', 1);
 
 app.use(helmet());
@@ -16,14 +15,17 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/ads', require('./routes/ads'));
-app.use('/api/user', require('./routes/user'));
+app.use('/api/auth',        require('./routes/auth'));
+app.use('/api/ads',         require('./routes/ads'));
+app.use('/api/user',        require('./routes/user'));
+app.use('/api/collections', require('./routes/collections'));  // ✅ NEW
+app.use('/api/alerts',      require('./routes/alerts'));       // ✅ NEW
+app.use('/api/ai',          require('./routes/ai'));           // ✅ NEW
 
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', server: 'AdVault Backend', time: new Date().toISOString() });
