@@ -260,10 +260,50 @@ Return ONLY this JSON (no markdown, no extra text):
 // ─── TikTok Ads List ──────────────────────────────────────────────────────────
 router.get('/tiktok', protect, async (req, res) => {
   try {
-    const { country = 'US', order = 'impression', period = '30' } = req.query;
-    const result = await searchTikTokAds({ country, order, period });
+    const { country = 'US', order = 'like', period = '7' } = req.query;
+
+    let result = null;
+
+    // Primary fetch
+    try {
+      result = await searchTikTokAds({ country, order, period });
+    } catch (primaryErr) {
+      console.error(`TikTok fetch fail (${country}/${period}):`, primaryErr.response?.status, primaryErr.message);
+
+      // 429 ya 500 → US fallback try karo
+      if (country !== 'US') {
+        console.log('Fallback: US country try kar raha hai...');
+        try {
+          result = await searchTikTokAds({ country: 'US', order, period });
+        } catch (fallbackErr) {
+          console.error('US fallback bhi fail:', fallbackErr.message);
+        }
+      }
+
+      // Abhi bhi fail → period 30 pe try
+      if (!result && period !== '30') {
+        console.log('Fallback: period=30 try kar raha hai...');
+        try {
+          result = await searchTikTokAds({ country: 'US', order: 'like', period: '30' });
+        } catch (e) {
+          console.error('Period fallback fail:', e.message);
+        }
+      }
+
+      if (!result) {
+        const status = primaryErr.response?.status;
+        if (status === 429) {
+          return res.status(429).json({ success: false, message: 'Rate limit — thodi der baad try karo' });
+        }
+        return res.status(500).json({ success: false, message: primaryErr.message });
+      }
+    }
+
     res.json({ success: true, data: result });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('TikTok route unexpected error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 // ─── TikTok Ad Detail ─────────────────────────────────────────────────────────
