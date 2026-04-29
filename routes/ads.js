@@ -12,15 +12,19 @@ const {
   getTopProducts,
   getProductDetail,
   getTikTokVideoInfo,
+  getTrendingVideos,
+  getTrendingHashtags,
+  getTrendingSounds,
+  getTrendingCreators,
   searchMetaAds,
   searchGoogleAds,
   getAliExpressHotProducts,
   getAliExpressCategories,
 } = require('../services/rapidApi');
 
-// ─── tiktok-video-no-watermark2 client (video URL fetch) ─────────────────────
-const TT_KEY  = process.env.TIKTOK_VIDEO_KEY || process.env.RAPIDAPI_KEY;
-const TT_HOST = 'tiktok-video-no-watermark2.p.rapidapi.com';
+// ─── tiktok-scraper7 client (video URL fetch) ────────────────────────────────
+const TT_KEY  = process.env.RAPIDAPI_KEY;
+const TT_HOST = 'tiktok-scraper7.p.rapidapi.com';
 const ttVideoClient = axios.create({
   baseURL: `https://${TT_HOST}`,
   headers: {
@@ -503,6 +507,42 @@ router.get('/related/:adId', protect, async (req, res) => {
     console.error('Related products error:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// ─── Trending Videos ──────────────────────────────────────────────────────────
+router.get('/trending/videos', protect, async (req, res) => {
+  try {
+    const { keyword = 'fyp', region = 'us', count = 10, cursor = 0 } = req.query;
+    const result = await getTrendingVideos({ keyword, region, count, cursor });
+    res.json({ success: true, data: result });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// ─── Trending Hashtags ────────────────────────────────────────────────────────
+router.get('/trending/hashtags', protect, async (req, res) => {
+  try {
+    const { region = 'US' } = req.query;
+    const result = await getTrendingHashtags({ region });
+    res.json({ success: true, data: result });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// ─── Trending Sounds ──────────────────────────────────────────────────────────
+router.get('/trending/sounds', protect, async (req, res) => {
+  try {
+    const { region = 'US' } = req.query;
+    const result = await getTrendingSounds({ region });
+    res.json({ success: true, data: result });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// ─── Trending Creators ────────────────────────────────────────────────────────
+router.get('/trending/creators', protect, async (req, res) => {
+  try {
+    const { region = 'US' } = req.query;
+    const result = await getTrendingCreators({ region });
+    res.json({ success: true, data: result });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
 // ─── DEBUG — production mein bhi chalega temporarily ─────────────────────────
