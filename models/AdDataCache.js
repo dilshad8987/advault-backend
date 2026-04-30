@@ -1,4 +1,5 @@
 // models/AdDataCache.js
+// TTL index hata diya — ab raat 12 baje manually delete + fresh load hoga
 const mongoose = require('mongoose');
 
 const adDataCacheSchema = new mongoose.Schema({
@@ -11,6 +12,7 @@ const adDataCacheSchema = new mongoose.Schema({
 
   cache_key: {
     type: String,
+    index: true,
   },
 
   video: {
@@ -58,16 +60,11 @@ const adDataCacheSchema = new mongoose.Schema({
 
   fetched_by_user: { type: String, default: null },
 
-  // TTL — 24hr auto-delete (expires property hi index banata hai)
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 86400,
   },
 
 }, { timestamps: false });
-
-// Sirf cache_key pe extra index — createdAt ka TTL index mongoose khud banata hai
-adDataCacheSchema.index({ cache_key: 1 });
 
 module.exports = mongoose.model('AdDataCache', adDataCacheSchema);
