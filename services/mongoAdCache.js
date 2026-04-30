@@ -311,7 +311,7 @@ async function saveAdToCache(adId, rawData, cacheKey = null, userId = null) {
           createdAt: new Date(), // TTL reset
         }
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
   } catch (err) {
