@@ -1,4 +1,5 @@
 // models/AdListCache.js
+// TTL index hata diya — ab raat 12 baje manually delete + fresh load hoga
 const mongoose = require('mongoose');
 
 const adListCacheSchema = new mongoose.Schema({
@@ -24,17 +25,11 @@ const adListCacheSchema = new mongoose.Schema({
 
   fetched_by_user: { type: String, default: null },
 
-  // TTL — 24hr auto-delete (expires property hi index banata hai)
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 86400,
   },
 
 }, { timestamps: false });
-
-// Note: cache_key unique:true se index ban jata hai
-// createdAt expires:86400 se TTL index ban jata hai
-// Alag se koi index define nahi kiya — isliye duplicate warning nahi aayegi
 
 module.exports = mongoose.model('AdListCache', adListCacheSchema);
