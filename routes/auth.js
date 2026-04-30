@@ -1,270 +1,300 @@
-const express = require('express');
-const router = express.Router();
-const axios = require('axios');
-const admin = require('../utils/firebase');
-const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
-const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
-const { botDetection, extractFingerprint } = require('../middleware/botDetection');
-const { protect, invalidateUserCache } = require('../middleware/auth');
-const {
-  registerDevice, removeDevice,
-  storeRefreshToken, getRefreshToken, deleteRefreshToken
-} = require('../store/db');
+const { verifyAccessToken } = require('../utils/jwt');
+const { findUserById, isDeviceAllowed, registerDevice } = require('../store/db');
+const { extractFingerprint } = require('./botDetection');
 
-// ─── Device → userId mapping ───────────────────────────────────────────────────
-// Ek device pe sirf ek account allowed
-// Key: fingerprint, Value: userId
-const deviceOwner = new Map();
+// ─── In-Memory Cache ───────────────────────────────────────────────────────────
+const userCache   = new Map();
+const deviceCache = new Map();
+const USER_TTL    = 5  * 60 * 1000;
+const DEVICE_TTL  = 10 * 60 * 1000;
 
-// ================================
-// REGISTER
-// ================================
-router.post('/register', registerLimiter, botDetection, async (req, res) => {
+function getCached(cache, key, ttl) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > ttl) { cache.delete(key); return null; }
+  return entry.value;
+}
+function setCache(cache, key, value) {
+  cache.set(key, { value, ts: Date.now() });
+}
+function invalidateUserCache(userId) {
+  userCache.delete(userId);
+  for (const key of deviceCache.keys()) {
+    if (key.startsWith(`${userId}:`)) deviceCache.delete(key);
+  }
+}
+async function getCachedUser(userId) {
+  const cached = getCached(userCache, userId, USER_TTL);
+  if (cached) return cached;
+  const user = await findUserById(userId);
+  if (user) setCache(userCache, userId, user);
+  return user;
+}
+
+// ─── 1. Strong Password Validator ─────────────────────────────────────────────
+// Rules: min 8 chars, uppercase, lowercase, number, special char
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]).{8,}$/;
+
+function validateStrongPassword(password) {
+  if (!password || typeof password !== 'string') {
+    return { valid: false, message: 'Password daalna zaroori hai.' };
+  }
+  if (password.length < 8) {
+    return { valid: false, message: 'Password kam se kam 8 characters ka hona chahiye.' };
+  }
+  if (!/[A-Z]/.test(password)) {
+    return { valid: false, message: 'Password mein kam se kam 1 uppercase letter hona chahiye (A-Z).' };
+  }
+  if (!/[a-z]/.test(password)) {
+    return { valid: false, message: 'Password mein kam se kam 1 lowercase letter hona chahiye (a-z).' };
+  }
+  if (!/\d/.test(password)) {
+    return { valid: false, message: 'Password mein kam se kam 1 number hona chahiye (0-9).' };
+  }
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password)) {
+    return { valid: false, message: 'Password mein kam se kam 1 special character hona chahiye (!@#$%^&* etc).' };
+  }
+  return { valid: true };
+}
+
+// ─── 2. Temporary / Disposable Email Blocker ──────────────────────────────────
+// Common temp email domains ki list — aur bhi add karte raho
+const TEMP_EMAIL_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'tempmail.com', 'throwam.com',
+  'yopmail.com', 'sharklasers.com', 'guerrillamailblock.com', 'grr.la',
+  'guerrillamail.info', 'guerrillamail.biz', 'guerrillamail.de', 'guerrillamail.net',
+  'guerrillamail.org', 'spam4.me', 'trashmail.com', 'trashmail.me', 'trashmail.net',
+  'trashmail.at', 'trashmail.io', 'trashmail.org', 'trashmail.xyz',
+  'dispostable.com', 'mailnull.com', 'maildrop.cc', 'spamgourmet.com',
+  'spamgourmet.net', 'spamgourmet.org', 'fakeinbox.com', 'mailnesia.com',
+  'mailnull.com', 'spamcorpse.com', 'discard.email', 'spamspot.com',
+  'spamthis.co.uk', 'throwam.com', 'tempr.email', 'discard.email',
+  'discardmail.com', 'discardmail.de', 'spamgob.com', 'temp-mail.org',
+  'temp-mail.io', 'tempinbox.com', 'tempinbox.co.uk', '10minutemail.com',
+  '10minutemail.net', 'emailondeck.com', 'getairmail.com', 'getairmail.cf',
+  'getairmail.ga', 'getairmail.gq', 'getairmail.ml', 'getairmail.tk',
+  'mohmal.com', 'mt2015.com', 'mt2016.com', 'mt2017.com', 'mytempemail.com',
+  'nowmymail.com', 'put2.net', 'spam.la', 'spam4.me', 'spamfree24.org',
+  'spamfree24.de', 'spamfree24.eu', 'spamfree24.info', 'spamfree24.net',
+  'spamhere.com', 'spamhole.com', 'spaml.de', 'spaml.com', 'spamoff.de',
+  'spamtrap.ro', 'tempail.com', 'tempalias.com', 'tempinbox.com',
+  'tempinbox.co.uk', 'tempsky.com', 'tempomail.fr', 'temporaryinbox.com',
+  'tempthe.net', 'thanksnospam.info', 'throwam.com', 'trash-mail.com',
+  'trashdevil.com', 'trashdevil.de', 'trashmail.me', 'trashmail.net',
+  'trashmail.org', 'trashmail.xyz', 'uggsrock.com', 'venompen.com',
+  'wegwerfmail.de', 'wegwerfmail.net', 'wegwerfmail.org', 'wh4f.org',
+  'whyspam.me', 'willhackforfood.biz', 'willselfdestruct.com', 'winemaven.info',
+  'wronghead.com', 'wuzupmail.net', 'xsecurity.org', 'xtend.biz', 'yep.it',
+  'yogamaven.com', 'yopmail.fr', 'yopmail.pp.ua', 'yourspamgoesto.space',
+  'yuurok.com', 'za.com', 'zerotohero.com', 'ziggo.nl', 'zoemail.com',
+  'zoemail.net', 'zoemail.org', 'zomg.info', 'luxusmail.org', 'junkmail.gq',
+]);
+
+function isTempEmail(email) {
+  if (!email || typeof email !== 'string') return true;
+  const domain = email.split('@')[1]?.toLowerCase();
+  if (!domain) return true;
+  return TEMP_EMAIL_DOMAINS.has(domain);
+}
+
+// ─── 3. VPN / Proxy / Tor Detection ───────────────────────────────────────────
+// Ye headers proxy/VPN se aate hain. Genuine users ke paas ye nahi hote.
+const VPN_HEADERS = [
+  'x-forwarded-for',      // proxy/VPN ka indicator
+  'via',                  // HTTP proxy
+  'x-proxy-id',
+  'x-real-ip',            // Nginx ke peeche agar apna server nahi hai
+  'x-cluster-client-ip',
+  'forwarded-for',
+  'forwarded',
+  'cf-connecting-ip',     // Cloudflare (allowed agar khud Cloudflare use kar rahe ho)
+];
+
+// Known VPN/Datacenter ASN ranges — ye optional hai, agar IP check karna ho
+// Abhi header-based detection hi kaafi hai basic level ke liye
+function detectVPN(req) {
+  // Method 1: Proxy headers check
+  const via      = req.headers['via'];
+  const proxyId  = req.headers['x-proxy-id'];
+
+  if (via)     return { detected: true, reason: 'HTTP Proxy header mila (Via)' };
+  if (proxyId) return { detected: true, reason: 'Proxy ID header mila' };
+
+  // Method 2: X-Forwarded-For mein multiple IPs = proxy chain
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    const ips = xForwardedFor.split(',').map(ip => ip.trim());
+    // Agar 2 se zyada IPs hain chain mein — VPN/proxy ka strong indicator
+    if (ips.length > 2) {
+      return { detected: true, reason: 'Multiple IP chain mili (VPN/proxy chain)' };
+    }
+  }
+
+  // Method 3: User-Agent mein VPN client names
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const vpnAgents = ['nordvpn', 'expressvpn', 'surfshark', 'protonvpn', 'cyberghost', 'ipvanish', 'purevpn'];
+  if (vpnAgents.some(v => ua.includes(v))) {
+    return { detected: true, reason: 'VPN client user-agent detect hua' };
+  }
+
+  return { detected: false };
+}
+
+// ─── 4. Email Validation (proper format) ──────────────────────────────────────
+function isValidEmail(email) {
+  const emailRegex = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
+  return emailRegex.test(email);
+}
+
+// ─── Registration Validator Middleware ─────────────────────────────────────────
+// Ye middleware /auth/register route pe lagao
+async function validateRegistration(req, res, next) {
+  const { email, password, name } = req.body;
+
+  // Name check
+  if (!name || name.trim().length < 2) {
+    return res.status(400).json({ success: false, message: 'Valid naam daalna zaroori hai.' });
+  }
+
+  // Email format check
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ success: false, message: 'Valid email daalna zaroori hai.' });
+  }
+
+  // Temp email check
+  if (isTempEmail(email)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Temporary ya disposable email allowed nahi hai. Real email use karo.'
+    });
+  }
+
+  // Strong password check
+  const pwCheck = validateStrongPassword(password);
+  if (!pwCheck.valid) {
+    return res.status(400).json({ success: false, message: pwCheck.message });
+  }
+
+  // VPN/Proxy check during registration
+  const vpnCheck = detectVPN(req);
+  if (vpnCheck.detected) {
+    return res.status(403).json({
+      success: false,
+      message: 'VPN ya Proxy se registration allowed nahi hai. Direct connection use karo.'
+    });
+  }
+
+  next();
+}
+
+// ─── Main Auth Middleware ──────────────────────────────────────────────────────
+async function protect(req, res, next) {
   try {
-    const { name, email, password } = req.body;
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Login karo pehle' });
+    }
 
-    if (!name || !email || !password)
-      return res.status(400).json({ success: false, message: 'Name, email aur password zaroori hain' });
-    if (password.length < 8)
-      return res.status(400).json({ success: false, message: 'Password 8 characters ka hona chahiye' });
-    if (!email.includes('@'))
-      return res.status(400).json({ success: false, message: 'Valid email daalo' });
+    const token = authHeader.split(' ')[1];
+    const decoded = verifyAccessToken(token);
+    if (!decoded?.id) {
+      return res.status(401).json({ success: false, message: 'Token expire ho gaya. Dobara login karo.' });
+    }
 
-    // Is device pe pehle se koi account hai?
     const fingerprint = extractFingerprint(req);
-    const existingOwner = deviceOwner.get(fingerprint);
-    if (existingOwner) {
+    const user = await getCachedUser(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User nahi mila' });
+    }
+
+    // ─── Device Check — 1 Device Per Account ─────────────────────────────────
+    const cacheKey = `${user.id}:${fingerprint}`;
+    const cachedDevice = getCached(deviceCache, cacheKey, DEVICE_TTL);
+
+    if (!cachedDevice) {
+      const allowed = isDeviceAllowed(user.id, fingerprint);
+      if (!allowed) {
+        // Pehle check karo: kya user ka koi device already registered hai?
+        // Agar hai toh naya device block karo (1 device policy)
+        const maxDevices = parseInt(process.env.MAX_DEVICES_PER_USER || '1', 10);
+        const { getUserDeviceCount } = require('../store/db');
+        const deviceCount = getUserDeviceCount ? getUserDeviceCount(user.id) : 0;
+
+        if (deviceCount >= maxDevices) {
+          return res.status(403).json({
+            success: false,
+            message: 'Ek account pe sirf ek device allowed hai. Pehle wale device se logout karo.',
+            code: 'DEVICE_LIMIT_EXCEEDED'
+          });
+        }
+
+        // Pehla device hai ya server restart — register karo
+        registerDevice(user.id, fingerprint);
+      }
+      setCache(deviceCache, cacheKey, true);
+    }
+
+    req.user = user;
+    req.fingerprint = fingerprint;
+    next();
+
+  } catch (err) {
+    console.error('[Auth] protect error:', err.message);
+    return res.status(401).json({ success: false, message: 'Authentication fail' });
+  }
+}
+
+// ─── Login Validator Middleware ────────────────────────────────────────────────
+// Ye middleware /auth/login route pe lagao (VPN block optional login pe)
+async function validateLogin(req, res, next) {
+  const { email, password } = req.body;
+
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ success: false, message: 'Valid email daalo.' });
+  }
+
+  if (!password) {
+    return res.status(400).json({ success: false, message: 'Password daalna zaroori hai.' });
+  }
+
+  // Optional: Login pe bhi VPN block karo
+  if (process.env.BLOCK_VPN_ON_LOGIN === 'true') {
+    const vpnCheck = detectVPN(req);
+    if (vpnCheck.detected) {
       return res.status(403).json({
         success: false,
-        message: 'Is device pe pehle se ek account registered hai. Naya account nahi ban sakta.',
-        code: 'DEVICE_ALREADY_REGISTERED'
+        message: 'VPN ya Proxy se login allowed nahi hai.'
       });
     }
-
-    let firebaseUser;
-    try {
-      firebaseUser = await admin.auth().createUser({ email, password, displayName: name });
-    } catch (err) {
-      if (err.code === 'auth/email-already-exists')
-        return res.status(409).json({ success: false, message: 'Email pehle se registered hai' });
-      console.error('Firebase createUser error:', err.message);
-      throw err;
-    }
-
-    await admin.firestore().collection('users').doc(firebaseUser.uid).set({
-      id: firebaseUser.uid,
-      name, email,
-      plan: 'free',
-      searchCount: 0,
-      searchResetDate: new Date().toDateString(),
-      savedAds: [],
-      createdAt: new Date().toISOString()
-    });
-
-    // Device ko is user ke saath permanently bind karo
-    deviceOwner.set(fingerprint, firebaseUser.uid);
-    registerDevice(firebaseUser.uid, fingerprint);
-
-    const accessToken  = generateAccessToken({ id: firebaseUser.uid, email });
-    const refreshToken = generateRefreshToken({ id: firebaseUser.uid });
-    storeRefreshToken(refreshToken, firebaseUser.uid);
-
-    res.status(201).json({
-      success: true,
-      message: 'Account ban gaya!',
-      accessToken, refreshToken,
-      user: {
-        id: firebaseUser.uid, name, email,
-        plan: 'free', savedAds: [],
-        createdAt: new Date().toISOString()
-      }
-    });
-
-  } catch (err) {
-    console.error('Register error:', err.message);
-    res.status(500).json({ success: false, message: 'Register fail: ' + err.message });
   }
-});
 
-// ================================
-// LOGIN
-// ================================
-router.post('/login', authLimiter, botDetection, async (req, res) => {
-  try {
-    const { email, password } = req.body;
+  next();
+}
 
-    if (!email || !password)
-      return res.status(400).json({ success: false, message: 'Email aur password daalo' });
-
-    // Step 1: Firebase se user check karo
-    let firebaseUser;
-    try {
-      firebaseUser = await admin.auth().getUserByEmail(email);
-    } catch (err) {
-      return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
-    }
-
-    // Step 2: Password verify karo (axios — node-fetch nahi)
-    const webApiKey = process.env.FIREBASE_WEB_API_KEY;
-    if (!webApiKey) {
-      console.error('FIREBASE_WEB_API_KEY missing!');
-      return res.status(500).json({ success: false, message: 'Server config error' });
-    }
-
-    try {
-      await axios.post(
-        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${webApiKey}`,
-        { email, password, returnSecureToken: true }
-      );
-    } catch (err) {
-      const msg = err.response?.data?.error?.message || '';
-      console.error('Firebase verify error:', msg);
-      if (msg.includes('TOO_MANY_ATTEMPTS'))
-        return res.status(429).json({ success: false, message: 'Bahut zyada attempts. Thodi der baad try karo.' });
-      return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
-    }
-
-    // Step 3: Device check — kya is device pe koi ALAG account registered hai?
-    const fingerprint = extractFingerprint(req);
-    const existingOwner = deviceOwner.get(fingerprint);
-
-    if (existingOwner && existingOwner !== firebaseUser.uid) {
-      return res.status(403).json({
-        success: false,
-        message: 'Is device pe pehle se alag account registered hai. Wahi account use karo.',
-        code: 'DEVICE_TAKEN'
-      });
-    }
-
-    // Step 4: User data fetch karo
-    const userDoc = await admin.firestore().collection('users').doc(firebaseUser.uid).get();
-    const userData = userDoc.data() || {};
-
-    // Device bind karo (agar nahi hai toh)
-    deviceOwner.set(fingerprint, firebaseUser.uid);
-    registerDevice(firebaseUser.uid, fingerprint);
-
-    // Step 5: Tokens generate karo
-    const accessToken  = generateAccessToken({ id: firebaseUser.uid, email });
-    const refreshToken = generateRefreshToken({ id: firebaseUser.uid });
-    storeRefreshToken(refreshToken, firebaseUser.uid);
-
-    res.json({
-      success: true,
-      message: 'Login successful!',
-      accessToken, refreshToken,
-      user: {
-        id: firebaseUser.uid,
-        name: userData.name || firebaseUser.displayName,
-        email,
-        plan: userData.plan || 'free',
-        savedAds: userData.savedAds || [],
-        createdAt: userData.createdAt
-      }
-    });
-
-  } catch (err) {
-    console.error('Login error:', err.message);
-    res.status(500).json({ success: false, message: 'Login fail: ' + err.message });
+// ─── Plan Guards ───────────────────────────────────────────────────────────────
+function requirePro(req, res, next) {
+  if (req.user.plan === 'free') {
+    return res.status(403).json({ success: false, message: 'Pro plan chahiye', upgrade: true });
   }
-});
+  next();
+}
 
-// ================================
-// FORGOT PASSWORD
-// ================================
-router.post('/forgot-password', authLimiter, async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: 'Email daalo' });
-
-    // Pehle check karo — registered hai ya nahi
-    try {
-      await admin.auth().getUserByEmail(email);
-    } catch {
-      // FIX: Success message nahi — clear error batao
-      return res.status(404).json({
-        success: false,
-        message: 'Yeh email registered nahi hai. Pehle account banao.'
-      });
-    }
-
-    // Registered hai toh reset email bhejo
-    try {
-      await axios.post(
-        `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${process.env.FIREBASE_WEB_API_KEY}`,
-        { requestType: 'PASSWORD_RESET', email }
-      );
-    } catch (err) {
-      console.error('Reset email error:', err.response?.data || err.message);
-      return res.status(500).json({ success: false, message: 'Email bhejne mein error hua. Dobara try karo.' });
-    }
-
-    res.json({ success: true, message: 'Password reset email bhej diya! Inbox check karo.' });
-
-  } catch (err) {
-    console.error('Forgot password error:', err.message);
-    res.status(500).json({ success: false, message: 'Server error' });
+function requireAgency(req, res, next) {
+  if (req.user.plan !== 'agency') {
+    return res.status(403).json({ success: false, message: 'Agency plan chahiye', upgrade: true });
   }
-});
+  next();
+}
 
-// ================================
-// REFRESH TOKEN
-// ================================
-router.post('/refresh', async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken)
-      return res.status(401).json({ success: false, message: 'Refresh token nahi mila' });
-
-    const decoded = verifyRefreshToken(refreshToken);
-    if (!decoded)
-      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
-
-    // Server restart safe — JWT valid hai toh allow karo
-    const newAccessToken = generateAccessToken({ id: decoded.id });
-    res.json({ success: true, accessToken: newAccessToken });
-
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ================================
-// LOGOUT
-// ================================
-router.post('/logout', protect, async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-    const userId = req.user.id;
-    const fingerprint = req.fingerprint;
-
-    if (refreshToken) deleteRefreshToken(refreshToken);
-    removeDevice(userId, fingerprint);
-    invalidateUserCache(userId);
-
-    // Logout pe device free karo taaki user naya account bana sake
-    if (deviceOwner.get(fingerprint) === userId) {
-      deviceOwner.delete(fingerprint);
-    }
-
-    res.json({ success: true, message: 'Logout ho gaye' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ================================
-// ME
-// ================================
-router.get('/me', protect, async (req, res) => {
-  try {
-    const userDoc = await admin.firestore().collection('users').doc(req.user.id).get();
-    const userData = userDoc.data() || {};
-    res.json({ success: true, user: { ...userData, password: undefined } });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-module.exports = router;
-
+module.exports = {
+  protect,
+  requirePro,
+  requireAgency,
+  invalidateUserCache,
+  validateRegistration,  // /auth/register pe lagao
+  validateLogin,         // /auth/login pe lagao
+  validateStrongPassword,
+  isTempEmail,
+  detectVPN,
+};
