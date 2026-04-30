@@ -20,11 +20,11 @@ app.use(cors({
   credentials: true,
 }));
 
-// ─── MongoDB Connection ────────────────────────────────────────────────────────
+// ─── MongoDB + Midnight Reset ─────────────────────────────────────────────────
 async function connectMongoDB() {
   const uri = process.env.MONGODB_URI;
   if (!uri) {
-    console.warn('⚠️  MONGODB_URI .env mein set nahi hai — video/ad caching disabled');
+    console.warn('⚠️  MONGODB_URI set nahi hai — caching disabled');
     return;
   }
   try {
@@ -32,7 +32,15 @@ async function connectMongoDB() {
       dbName: process.env.MONGODB_DB_NAME || 'advault',
       serverSelectionTimeoutMS: 5000,
     });
-    console.log('✅ MongoDB connected — full ad data caching active (24hr TTL)');
+    console.log('✅ MongoDB connected');
+
+    // Midnight reset start karo
+    // - Server start pe saara data load hoga
+    // - Raat 12 baje purana delete + fresh load
+    // - Har roz repeat
+    const { startMidnightReset } = require('./services/mongoAdCache');
+    startMidnightReset();
+
   } catch (err) {
     console.error('❌ MongoDB connection fail:', err.message);
     console.warn('   Caching disabled — direct API calls hongi');
