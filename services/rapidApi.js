@@ -210,6 +210,74 @@ async function getTikTokVideoInfo(tiktokUrl) {
   }, 3600);
 }
 
+
+// ─── Meta Ads Library API ─────────────────────────────────────────────────────
+// RapidAPI: facebook-scraper-api4.p.rapidapi.com
+const META_HOST = 'facebook-scraper-api4.p.rapidapi.com';
+const META_KEY  = process.env.RAPIDAPI_KEY; // same key ya alag META_RAPIDAPI_KEY
+
+const metaClient = axios.create({
+  baseURL: `https://${META_HOST}`,
+  headers: {
+    'x-rapidapi-key':  process.env.META_RAPIDAPI_KEY || META_KEY,
+    'x-rapidapi-host': META_HOST,
+    'Content-Type':    'application/json',
+  },
+  timeout: 20000,
+});
+
+// Fetch ads for a specific Facebook page
+async function getMetaPageAds({ pageId = '', country = 'ALL', activeStatus = 'ALL', cursor = '' } = {}) {
+  const cKey = makeCacheKey('meta_page_ads', { pageId, country, activeStatus, cursor });
+  return getOrFetch(cKey, async () => {
+    return rateLimitedCall(() => withRetry(async () => {
+      const res = await metaClient.post('/fetch_search_ads_pages', {
+        query: '',
+        ad_page_id: pageId,
+        country,
+        activeStatus,
+        end_cursor: cursor || '',
+        after_time: '',
+        before_time: '',
+        sort_data: '',
+      });
+      return res.data;
+    }));
+  }, 3600); // 1 hour cache
+}
+
+// Search Meta ads by keyword (uses GET endpoint)
+async function searchMetaAdsByKeyword({ keyword = '', country = 'ALL', activeStatus = 'ACTIVE' } = {}) {
+  const cKey = makeCacheKey('meta_search_ads', { keyword, country, activeStatus });
+  return getOrFetch(cKey, async () => {
+    return rateLimitedCall(() => withRetry(async () => {
+      const res = await metaClient.get('/fetch_search_ads_keywords', {
+        params: {
+          query: keyword,
+          country,
+          activeStatus,
+          end_cursor: '',
+          sort_data: 'RELEVANCE_DESC',
+        },
+      });
+      return res.data;
+    }));
+  }, 3600);
+}
+
+// Get all ads for a specific page (detail endpoint)
+async function getMetaPageAdDetails({ pageId = '' } = {}) {
+  const cKey = 'meta_page_detail_' + pageId;
+  return getOrFetch(cKey, async () => {
+    return rateLimitedCall(() => withRetry(async () => {
+      const res = await metaClient.get('/fetch_page_ad_details', {
+        params: { page_id: pageId },
+      });
+      return res.data;
+    }));
+  }, 3600);
+}
+
 // ─── Legacy wrappers ──────────────────────────────────────────────────────────
 async function searchMetaAds({ keyword = '', country = 'US' }) {
   return searchTikTokAds({ keyword, country, order: 'like', period: '7' });
@@ -260,4 +328,7 @@ module.exports = {
   searchGoogleAds,
   getAliExpressHotProducts,
   getAliExpressCategories,
+  getMetaPageAds,
+  searchMetaAdsByKeyword,
+  getMetaPageAdDetails,
 };
