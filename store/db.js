@@ -109,9 +109,20 @@ async function incrementSearchCount(userId) {
   }
 }
 
+
+// Fix 6: getUserDevices — was missing, routes/user.js use karta hai
+function getUserDevices(userId) {
+  return Array.from(deviceSessions.get(userId) || []);
+}
+
+// getUserDeviceCount — middleware/auth.js use karta hai device limit ke liye
+function getUserDeviceCount(userId) {
+  return deviceSessions.get(userId)?.size || 0;
+}
+
 module.exports = {
   findUserById, findUserByEmail, updateUser,
-  deviceSessions, registerDevice, isDeviceAllowed, removeDevice, getDeviceCount,
+  deviceSessions, registerDevice, isDeviceAllowed, removeDevice, getDeviceCount, getUserDevices, getUserDeviceCount,
   refreshTokens, storeRefreshToken, getRefreshToken, deleteRefreshToken,
   checkSearchLimit, incrementSearchCount,
 };
