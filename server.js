@@ -9,16 +9,33 @@ const mongoose = require('mongoose');
 const app = express();
 app.set('trust proxy', 1);
 
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:5000',
+].filter(Boolean);
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // No origin = Postman / mobile / server-to-server — allow karo
+    if (!origin) return callback(null, true);
+    // Exact match ya koi bhi .vercel.app subdomain
+    const allowed =
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.vercel.app');
+    if (allowed) return callback(null, true);
+    return callback(new Error('CORS: origin allowed nahi hai — ' + origin));
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
+
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-}));
 
 // ─── MongoDB + Midnight Reset ─────────────────────────────────────────────────
 async function connectMongoDB() {
@@ -34,10 +51,6 @@ async function connectMongoDB() {
     });
     console.log('✅ MongoDB connected');
 
-    // Midnight reset start karo
-    // - Server start pe saara data load hoga
-    // - Raat 12 baje purana delete + fresh load
-    // - Har roz repeat
     const { startMidnightReset } = require('./services/mongoAdCache');
     startMidnightReset();
 
