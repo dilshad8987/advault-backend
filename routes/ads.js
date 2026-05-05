@@ -15,6 +15,7 @@
 // 24hr baad → MongoDB TTL auto-delete → fresh cycle
 
 const express  = require('express');
+const { saveImageToR2 } = require('../services/r2');
 const router   = express.Router();
 const axios    = require('axios');
 const mongoose = require('mongoose');
@@ -454,7 +455,7 @@ router.get('/image-proxy', async (req, res) => {
     // Step 1: MongoDB se R2 URL check karo — seedha redirect (fastest)
     if (id && MetaAd && mongoose.connection.readyState === 1) {
       const ad = await MetaAd.findOne({ library_id: id }).select('r2_image_url image').lean();
-      if (ad?.r2_image_url) {
+      if (ad?.r2_image_url && ad.r2_image_url !== '' && ad.r2_image_url !== 'expired') {
         res.setHeader('Cache-Control', 'public, max-age=604800');
         return res.redirect(302, ad.r2_image_url);
       }
