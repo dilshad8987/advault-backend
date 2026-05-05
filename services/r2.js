@@ -28,9 +28,13 @@ async function uploadToR2(key, buffer, contentType) {
 function downloadImage(url) {
   return new Promise((resolve) => {
     if (!url || !url.startsWith('http')) return resolve(null);
+    // stp parameter mein size fix karo (regex se)
     const fixedUrl = url
-      .replace('s60x60','s600x600').replace('dst-jpg_s60x60','dst-jpg_s600x600')
-      .replace('_s60x60','_s600x600').replace('p60x60','p600x600');
+      .replace(/stp=dst-jpg_s\d+x\d+/g, 'stp=dst-jpg_s600x600')
+      .replace(/stp=dst-jpg_s60x60/g, 'stp=dst-jpg_s600x600')
+      .replace(/_s60x60/g, '_s600x600')
+      .replace(/s60x60/g, 's600x600')
+      .replace(/p60x60/g, 'p600x600');
     const client = fixedUrl.startsWith('https') ? https : http;
     const req = client.get(fixedUrl, {
       headers: { 'User-Agent':'Mozilla/5.0','Referer':'https://www.facebook.com/','Accept':'image/*' },
