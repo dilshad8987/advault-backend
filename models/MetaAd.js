@@ -26,11 +26,12 @@ const metaAdSchema = new mongoose.Schema({
   format:           { type: String, default: '' }, // image / video / carousel
 
   // Media
-  images:       [{ url: String }],
-  videos:       [{ url: String, thumbnail: String }],
-  image:        { type: String, default: '' },
-  video:        { type: String, default: '' },
-  snapshot_url: { type: String, default: '' },
+  images:        [{ url: String }],
+  videos:        [{ url: String, thumbnail: String }],
+  image:         { type: String, default: '' },   // Original Facebook CDN URL (backup)
+  r2_image_url:  { type: String, default: '' },   // Cloudflare R2 permanent URL ← NEW
+  video:         { type: String, default: '' },
+  snapshot_url:  { type: String, default: '' },
 
   // Platforms
   platforms:      [{ type: String }], // ["Facebook", "Instagram", ...]
