@@ -73,21 +73,25 @@ async function getTikTokVideoInfo(tiktokUrl) {
 
 // ─── Video Stream Proxy ───────────────────────────────────────────────────────
 router.get('/video/stream', async (req, res) => {
-  const token = req.query.token || (req.headers.authorization || '').replace('Bearer ', '');
-  if (!token) return res.status(401).json({ success: false, message: 'Unauthorized' });
-
-  const { verifyAccessToken } = require('../utils/jwt');
-  const decoded = verifyAccessToken(token);
-  if (!decoded) return res.status(401).json({ success: false, message: 'Token invalid' });
-
   const { url } = req.query;
   if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  const decodedUrlCheck = decodeURIComponent(url);
+  const isR2 = decodedUrlCheck.includes('r2.dev') || decodedUrlCheck.includes('pub-');
+
+  // R2 videos public hain — token check skip karo
+  // Non-R2 (TikTok etc.) ke liye token verify karo
+  if (!isR2) {
+    const token = req.query.token || (req.headers.authorization || '').replace('Bearer ', '');
+    if (!token) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const { verifyAccessToken } = require('../utils/jwt');
+    const decoded = verifyAccessToken(token);
+    if (!decoded) return res.status(401).json({ success: false, message: 'Token invalid' });
+  }
 
   try {
     const decodedUrl  = decodeURIComponent(url);
     const rangeHeader = req.headers['range'];
-
-    // R2 / Cloudflare URL ke liye clean headers — TikTok headers nahi bhejne
     const isR2Url = decodedUrl.includes('r2.dev') || decodedUrl.includes('pub-');
     const upstreamHeaders = isR2Url
       ? { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' }
