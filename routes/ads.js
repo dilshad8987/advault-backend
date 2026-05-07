@@ -86,12 +86,17 @@ router.get('/video/stream', async (req, res) => {
   try {
     const decodedUrl  = decodeURIComponent(url);
     const rangeHeader = req.headers['range'];
-    const upstreamHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Referer':    'https://www.tiktok.com/',
-      'Origin':     'https://www.tiktok.com',
-      'Accept':     '*/*',
-    };
+
+    // R2 / Cloudflare URL ke liye clean headers — TikTok headers nahi bhejne
+    const isR2Url = decodedUrl.includes('r2.dev') || decodedUrl.includes('pub-');
+    const upstreamHeaders = isR2Url
+      ? { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' }
+      : {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer':    'https://www.tiktok.com/',
+          'Origin':     'https://www.tiktok.com',
+          'Accept':     '*/*',
+        };
     if (rangeHeader) upstreamHeaders['Range'] = rangeHeader;
 
     const videoRes = await axios.get(decodedUrl, {
