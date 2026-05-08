@@ -441,9 +441,17 @@ router.get('/meta', protect, async (req, res) => {
 
       // ── Brand diversity pipeline ─────────────────────────────────────────
       // Ek hi brand ke 3 se zyada ads ek page pe na aayein
+      // + Same r2_video_url wale ads filter (creative duplicates)
       const pipeline = [
         { $match: query },
         { $sort: { trending_score: -1, priority: -1, featured: -1, scraped_at: -1 } },
+        // Creative dedup: same r2_video_url ho to sirf ek dikhao
+        { $group: {
+          _id:   { $ifNull: ['$r2_video_url', '$library_id'] },  // same video = same group
+          doc:   { $first: '$$ROOT' },
+        }},
+        { $replaceRoot: { newRoot: '$doc' } },
+        { $sort: { trending_score: -1, priority: -1, scraped_at: -1 } },
         // Brand diversity: har brand se max 3 ads
         { $group: {
           _id:  '$brand',
