@@ -1,8 +1,15 @@
 // services/r2.js
+//
+// SIMPLE 2-FOLDER SYSTEM:
+//   meta-ads/    → images  (meta-ads/LIBRARY_ID.jpg)
+//   meta-videos/ → videos  (meta-videos/LIBRARY_ID.mp4)
+//
+// Koi dedup/, vdedup/, img/, vid/ folder nahi — sab hata diye gaye
+// Duplicate detection: Library ID se check — already hai toh skip
+//
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const https  = require('https');
 const http   = require('http');
-const crypto = require('crypto');
 
 // ─── R2 credentials ──────────────────────────────────────────────────────────
 const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY_ID;
@@ -18,10 +25,7 @@ const s3 = new S3Client({
   forcePathStyle: true,
 });
 
-function bufferHash(buf) {
-  return crypto.createHash('md5').update(buf).digest('hex');
-}
-
+// ─── R2 Key exist check ───────────────────────────────────────────────────────
 async function r2KeyExists(key) {
   try {
     await s3.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
@@ -31,6 +35,7 @@ async function r2KeyExists(key) {
   }
 }
 
+// ─── Single upload ───────────────────────────────────────────────────────────
 async function uploadToR2(key, buffer, contentType) {
   await s3.send(new PutObjectCommand({
     Bucket: R2_BUCKET, Key: key, Body: buffer,
@@ -39,6 +44,7 @@ async function uploadToR2(key, buffer, contentType) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
+// ─── Image URL quality fix (1080x1080) ───────────────────────────────────────
 function fixImageQualityUrl(url) {
   if (!url) return url;
   return url
@@ -53,10 +59,26 @@ function fixImageQualityUrl(url) {
     .replace(/p160x160/g,  'p1080x1080');
 }
 
+// ─── Video URL quality fix (vbr cap hatao) ────────────────────────────────────
+function fixVideoQualityUrl(url) {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has('vbr')) {
+      parsed.searchParams.set('vbr', '0'); // bitrate cap hatao
+    }
+    return parsed.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
+// ─── Download buffer ──────────────────────────────────────────────────────────
 function downloadBuffer(url, isVideo) {
   return new Promise((resolve) => {
     if (!url || !url.startsWith('http')) return resolve(null);
-    const fixedUrl = isVideo ? url : fixImageQualityUrl(url);
+    // Image ke liye 1080p fix, video ke liye vbr fix
+    const fixedUrl = isVideo ? fixVideoQualityUrl(url) : fixImageQualityUrl(url);
     const client   = fixedUrl.startsWith('https') ? https : http;
     const maxSize  = isVideo ? 200 * 1024 * 1024 : 15 * 1024 * 1024;
 
@@ -92,68 +114,56 @@ function downloadBuffer(url, isVideo) {
   });
 }
 
-// IMAGE: library_id key + hash dedup
+// ─── IMAGE save: meta-ads/LIBRARY_ID.jpg ─────────────────────────────────────
+// Already uploaded hai → seedha URL return, download nahi hoga
 async function saveImageToR2(libraryId, imageUrl) {
   try {
-    const libKeyJpg = `meta-ads/img/${libraryId}.jpg`;
-    const libKeyPng = `meta-ads/img/${libraryId}.png`;
-    if (await r2KeyExists(libKeyJpg)) return `${R2_PUBLIC_URL}/${libKeyJpg}`;
-    if (await r2KeyExists(libKeyPng)) return `${R2_PUBLIC_URL}/${libKeyPng}`;
+    // Already uploaded check (library ID se)
+    const jpgKey = `meta-ads/${libraryId}.jpg`;
+    const pngKey = `meta-ads/${libraryId}.png`;
+    if (await r2KeyExists(jpgKey)) return `${R2_PUBLIC_URL}/${jpgKey}`;
+    if (await r2KeyExists(pngKey)) return `${R2_PUBLIC_URL}/${pngKey}`;
 
+    // Download (1080p quality URL se)
     const result = await downloadBuffer(imageUrl, false);
     if (!result) return null;
 
+    // Sirf EK jagah upload — meta-ads/ folder mein
     const ext      = result.contentType.includes('png') ? 'png' : 'jpg';
-    const finalKey = `meta-ads/img/${libraryId}.${ext}`;
-    const hash     = bufferHash(result.buffer);
-    const hashKey  = `meta-ads/dedup/${hash}.${ext}`;
-
-    if (await r2KeyExists(hashKey)) {
-      console.log(`   DEDUP image (${libraryId}) hash:${hash.slice(0,8)}`);
-      await uploadToR2(finalKey, result.buffer, result.contentType);
-      return `${R2_PUBLIC_URL}/${finalKey}`;
-    }
-
-    await Promise.all([
-      uploadToR2(finalKey, result.buffer, result.contentType),
-      uploadToR2(hashKey,  result.buffer, result.contentType),
-    ]);
-    console.log(`   OK image (${libraryId})`);
-    return `${R2_PUBLIC_URL}/${finalKey}`;
+    const finalKey = `meta-ads/${libraryId}.${ext}`;
+    const url      = await uploadToR2(finalKey, result.buffer, result.contentType);
+    console.log(`   ✅ Image uploaded: ${libraryId}`);
+    return url;
   } catch (err) {
-    console.error(`   FAIL image (${libraryId}):`, err.message);
+    console.error(`   ❌ Image upload fail (${libraryId}):`, err.message);
     return null;
   }
 }
 
-// VIDEO: library_id key + hash dedup
+// ─── VIDEO save: meta-videos/LIBRARY_ID.mp4 ──────────────────────────────────
+// Already uploaded hai → seedha URL return, download nahi hoga
 async function saveVideoToR2(libraryId, videoUrl) {
   try {
     if (!videoUrl) return null;
-    const libKey = `meta-ads/vid/${libraryId}.mp4`;
-    if (await r2KeyExists(libKey)) return `${R2_PUBLIC_URL}/${libKey}`;
 
+    // Already uploaded check (library ID se)
+    const videoKey = `meta-videos/${libraryId}.mp4`;
+    if (await r2KeyExists(videoKey)) {
+      console.log(`   ✓ Video already uploaded: ${libraryId}`);
+      return `${R2_PUBLIC_URL}/${videoKey}`;
+    }
+
+    // Download (best quality URL se)
     const result = await downloadBuffer(videoUrl, true);
     if (!result) return null;
 
-    const ct       = result.contentType.includes('video') ? result.contentType : 'video/mp4';
-    const hash     = bufferHash(result.buffer);
-    const hashKey  = `meta-ads/vdedup/${hash}.mp4`;
-
-    if (await r2KeyExists(hashKey)) {
-      console.log(`   DEDUP video (${libraryId}) hash:${hash.slice(0,8)}`);
-      await uploadToR2(libKey, result.buffer, ct);
-      return `${R2_PUBLIC_URL}/${libKey}`;
-    }
-
-    await Promise.all([
-      uploadToR2(libKey,  result.buffer, ct),
-      uploadToR2(hashKey, result.buffer, ct),
-    ]);
-    console.log(`   OK video (${libraryId}) size:${(result.buffer.length/1024/1024).toFixed(1)}MB`);
-    return `${R2_PUBLIC_URL}/${libKey}`;
+    // Sirf EK jagah upload — meta-videos/ folder mein
+    const ct  = result.contentType.includes('video') ? result.contentType : 'video/mp4';
+    const url = await uploadToR2(videoKey, result.buffer, ct);
+    console.log(`   📹 Video uploaded: ${libraryId} (${(result.buffer.length/1024/1024).toFixed(1)}MB)`);
+    return url;
   } catch (err) {
-    console.error(`   FAIL video (${libraryId}):`, err.message);
+    console.error(`   ❌ Video upload fail (${libraryId}):`, err.message);
     return null;
   }
 }
