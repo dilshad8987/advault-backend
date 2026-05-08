@@ -1,19 +1,3 @@
-// routes/ads.js — FULL DATA MongoDB Caching
-//
-// Ab sirf video URL nahi — POORA AD DATA cached hai:
-// - Video URL, cover, duration
-// - Likes, comments, shares, views, CTR
-// - Title, industry, objective
-// - Advertiser info
-// - Pura raw response bhi
-//
-// FLOW:
-// User A  → /api/ads/tiktok → API call → sab MongoDB mein save (24hr TTL)
-// User B  → /api/ads/tiktok → MongoDB se milega (no API call!)
-// User C  → /api/ads/tiktok/:adId → MongoDB se milega
-// User D  → /api/ads/video/url → MongoDB se video URL milegi
-// 24hr baad → MongoDB TTL auto-delete → fresh cycle
-
 const express  = require('express');
 const { saveImageToR2 } = require('../services/r2');
 const router   = express.Router();
@@ -361,15 +345,17 @@ try {
 
 // MongoDB scraped data ko frontend ke format mein convert karo
 function normalizeForFrontend(ad) {
-  // format detect: video hai ya image?
+  // ── Format detect: scraper 'ad_type' save karta hai, model 'format' bhi rakhta hai ──
+  const adType    = ad.ad_type || ad.format || '';
   const hasR2Video   = !!(ad.r2_video_url && ad.r2_video_url.trim());
   const hasOrigVideo = !!(ad.video && ad.video.trim());
-  const isVideo      = hasR2Video || hasOrigVideo || ad.format === 'video';
+  const isVideo   = adType === 'video' || hasR2Video || hasOrigVideo;
 
-  // Image: R2 pehle (permanent), phir original
+  // ── Image URL: R2 permanent URL pehle, phir original Facebook CDN ──────────
+  // Video ads ke liye bhi image hoti hai (thumbnail) — r2_image_url mein hoti hai
   const imageUrl = ad.r2_image_url || ad.image || null;
 
-  // Video: R2 pehle (permanent), phir original
+  // ── Video URL: R2 pehle, phir original ─────────────────────────────────────
   const videoUrl = ad.r2_video_url || ad.video || null;
 
   return {
@@ -381,25 +367,31 @@ function normalizeForFrontend(ad) {
     ad_delivery_stop_time:   ad.end_date   || null,
     spend:                   null,
     impressions:             null,
-    currency:                'USD',
+    currency:                ad.currency   || 'USD',
     ad_snapshot_url:         imageUrl,
     image:                   imageUrl,
     r2_image_url:            ad.r2_image_url || null,
     video_url:               videoUrl,
     r2_video_url:            ad.r2_video_url || null,
     video:                   videoUrl,
-    is_video:                isVideo,        // ← frontend ke liye clear flag
-    format:                  ad.format || (isVideo ? 'video' : 'image'),
+    is_video:                isVideo,
+    format:                  adType || (isVideo ? 'video' : 'image'),
     snapshot_url:            ad.snapshot_url || null,
     bylines:                 ad.cta_text   || '',
     platforms:               ad.platforms  || [],
     active:                  ad.active,
+    status:                  ad.status     || (ad.active ? 'Active' : 'Inactive'),
     keyword:                 ad.keyword    || '',
     country:                 ad.country    || '',
+    trending_score:          ad.trending_score || 0,
     priority:                ad.priority   || 0,
     featured:                ad.featured   || false,
     run_days:                ad.run_days   || 0,
     scraped_at:              ad.scraped_at || null,
+    // pHash info — frontend ke liye
+    is_phash_duplicate:      ad.is_phash_duplicate || false,
+    duplicate_of:            ad.duplicate_of       || null,
+    similarity_score:        ad.similarity_score   || null,
     _source:                 'mongodb_scraped',
     _raw:                    ad,
   };
@@ -437,17 +429,31 @@ router.get('/meta', protect, async (req, res) => {
       // Active status filter
       if (activeStatus === 'ACTIVE') query.active = true;
 
-      // Hidden ads mat dikhao
-      query.hidden = { $ne: true };
+      // Hidden aur visual duplicate ads mat dikhao
+      query.hidden             = { $ne: true };
+      query.is_phash_duplicate = { $ne: true };  // ← duplicate ads filter out
 
       const skip  = (parseInt(page) - 1) * parseInt(limit);
+      const lim   = parseInt(limit);
 
-      // trending_score se sort karo — sabse high impression/trending ads upar
+      // ── Brand diversity pipeline ─────────────────────────────────────────
+      // Ek hi brand ke 3 se zyada ads ek page pe na aayein
       const pipeline = [
         { $match: query },
         { $sort: { trending_score: -1, priority: -1, featured: -1, scraped_at: -1 } },
+        // Brand diversity: har brand se max 3 ads
+        { $group: {
+          _id:  '$brand',
+          docs: { $push: '$$ROOT' },
+          top:  { $first: '$trending_score' },
+        }},
+        { $sort: { top: -1 } },
+        { $project: { docs: { $slice: ['$docs', 3] } } },
+        { $unwind: '$docs' },
+        { $replaceRoot: { newRoot: '$docs' } },
+        { $sort: { trending_score: -1, scraped_at: -1 } },
         { $skip: skip },
-        { $limit: parseInt(limit) },
+        { $limit: lim },
       ];
 
       const countPipeline = [
