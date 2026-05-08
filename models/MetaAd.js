@@ -42,12 +42,33 @@ const metaAdSchema = new mongoose.Schema({
   view_count:  { type: Number,  default: 0, index: true },
   last_viewed: { type: Date,    default: null },
 
+  // ── Scraper-specific fields ───────────────────────────────────────────────
+  ad_type:         { type: String, default: '' },        // 'video' | 'image'
+  status:          { type: String, default: '' },        // 'Active' | 'Inactive'
+  is_dropshipping: { type: Boolean, default: false },
+  trending_score:  { type: Number, default: 0, index: true },
+  first_seen:      { type: Date, default: null },
+
+  // ── pHash duplicate detection ─────────────────────────────────────────────
+  image_phash:        { type: String,  default: null },
+  video_phashes:      [{ type: String }],
+  phash_bucket:       { type: String,  default: null },
+  phash_version:      { type: Number,  default: null },
+  is_phash_duplicate: { type: Boolean, default: false },
+  duplicate_of:       { type: String,  default: null },
+  similarity_score:   { type: Number,  default: null },
+
   scraped_at: { type: Date, default: Date.now, index: true },
   scrape_run: { type: String, default: '' },
   raw_data:   { type: mongoose.Schema.Types.Mixed, default: {} },
-}, { timestamps: true });
+// strict: false — scraper ke koi bhi extra field reject nahi hogi
+}, { timestamps: true, strict: false });
 
 metaAdSchema.index({ country: 1, active: 1, scraped_at: -1 });
 metaAdSchema.index({ search_keyword: 1, active: 1 });
+metaAdSchema.index({ trending_score: -1 });
+metaAdSchema.index({ is_phash_duplicate: 1, trending_score: -1 });
+metaAdSchema.index({ image_phash: 1 });
+metaAdSchema.index({ phash_bucket: 1 });
 
-module.exports = mongoose.model('MetaAd', metaAdSchema);
+module.exports = mongoose.model('MetaAd', metaAdSchema, 'metaads'); // ← collection name fix: 'metaads'
