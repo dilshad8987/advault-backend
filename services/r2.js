@@ -142,7 +142,14 @@ async function saveImageToR2(libraryId, imageUrl) {
 
 // ─── VIDEO save: meta-videos/LIBRARY_ID.mp4 ──────────────────────────────────
 // Already uploaded hai → seedha URL return, download nahi hoga
+// FFmpeg H264 CRF 18 re-encode: best quality + smaller file + instant streaming (faststart)
 async function saveVideoToR2(libraryId, videoUrl) {
+  const { execFile } = require('child_process');
+  const fs   = require('fs');
+  const path = require('path');
+  const os   = require('os');
+  const FFMPEG_PATH = process.env.FFMPEG_PATH || '/data/data/com.termux/files/usr/bin/ffmpeg';
+
   try {
     if (!videoUrl) return null;
 
@@ -157,10 +164,60 @@ async function saveVideoToR2(libraryId, videoUrl) {
     const result = await downloadBuffer(videoUrl, true);
     if (!result) return null;
 
-    // Sirf EK jagah upload — meta-videos/ folder mein
-    const ct  = result.contentType.includes('video') ? result.contentType : 'video/mp4';
-    const url = await uploadToR2(videoKey, result.buffer, ct);
-    console.log(`   📹 Video uploaded: ${libraryId} (${(result.buffer.length/1024/1024).toFixed(1)}MB)`);
+    // ── FFmpeg H264 CRF 18 re-encode ─────────────────────────────────────
+    let uploadBuffer      = result.buffer;
+    let uploadContentType = result.contentType.includes('video') ? result.contentType : 'video/mp4';
+
+    try {
+      const tmpDir    = os.tmpdir();
+      const safeId    = String(libraryId).replace(/[^a-zA-Z0-9]/g, '');
+      const rawInput  = path.join(tmpDir, `r2enc_in_${safeId}.mp4`);
+      const encOutput = path.join(tmpDir, `r2enc_out_${safeId}.mp4`);
+      fs.writeFileSync(rawInput, result.buffer);
+
+      const encodeOk = await new Promise((resolve) => {
+        execFile(
+          FFMPEG_PATH,
+          [
+            '-i',        rawInput,
+            '-c:v',      'libx264',       // H264 codec
+            '-crf',      '18',            // CRF 18 = high quality (18-28 range; lower = better)
+            '-preset',   'slow',          // slow preset = better compression at same quality
+            '-profile:v','high',          // H264 High profile
+            '-level',    '4.1',           // Level 4.1 — safe for all modern devices
+            '-pix_fmt',  'yuv420p',       // Maximum device compatibility
+            '-movflags', '+faststart',    // Moov atom front → instant CDN streaming
+            '-c:a',      'aac',           // AAC audio (universal)
+            '-b:a',      '128k',
+            '-y',
+            '-loglevel', 'error',
+            encOutput,
+          ],
+          { timeout: 300000 },            // 5 min timeout
+          (err) => resolve(!err)
+        );
+      });
+
+      if (encodeOk && fs.existsSync(encOutput)) {
+        const encBuf = fs.readFileSync(encOutput);
+        if (encBuf.length > 10000) {
+          const origMB = (result.buffer.length / 1024 / 1024).toFixed(1);
+          const encMB  = (encBuf.length / 1024 / 1024).toFixed(1);
+          console.log(`   🎞  H264 CRF18 encode: ${origMB}MB → ${encMB}MB (${libraryId})`);
+          uploadBuffer      = encBuf;
+          uploadContentType = 'video/mp4';
+        }
+        try { fs.unlinkSync(encOutput); } catch(e) {}
+      }
+      try { fs.unlinkSync(rawInput); } catch(e) {}
+    } catch (encErr) {
+      console.warn(`   ⚠ FFmpeg encode skipped (${libraryId}): ${encErr.message}`);
+      // Fall through — upload original buffer
+    }
+
+    // Upload encoded (or original) to R2
+    const url = await uploadToR2(videoKey, uploadBuffer, uploadContentType);
+    console.log(`   📹 Video uploaded: ${libraryId} (${(uploadBuffer.length/1024/1024).toFixed(1)}MB)`);
     return url;
   } catch (err) {
     console.error(`   ❌ Video upload fail (${libraryId}):`, err.message);
