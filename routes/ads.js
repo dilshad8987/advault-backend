@@ -295,44 +295,56 @@ catch(e) {
 
 // Normalize tiktokads doc → frontend format
 function normalizeTikTokForFrontend(ad) {
+  // Video URL: R2 pehle (permanent), phir original CDN
   const videoUrl = (ad.r2_video_url && ad.r2_video_url.trim())
     ? ad.r2_video_url
     : (ad.video_url || '');
+  // Cover: R2 pehle, phir original
   const coverUrl = (ad.r2_cover_url && ad.r2_cover_url.trim())
     ? ad.r2_cover_url
     : (ad.cover_url || '');
+
   return {
-    id:            ad.ad_id || String(ad._id),
-    material_id:   ad.ad_id,
-    ad_title:      ad.title || ad.brand || 'No Title',
-    brand_name:    ad.brand || 'Unknown',
-    like:          ad.like_count  || 0,
-    comment:       ad.comment_count || 0,
-    share:         ad.share_count || 0,
-    ctr:           (ad.ctr || 0) / 100,  // percentage → decimal
-    cost:          ad.cost || 0,
-    objective:     ad.objective || '',
-    objective_key: ad.objective || '',
-    industry:      ad.industry  || '',
-    is_active:     ad.is_active !== false,
-    country:       ad.country   || 'US',
-    trending_score:ad.trending_score || 0,
-    is_dropshipping: ad.is_dropshipping || false,
-    // video_info format — same as RapidAPI response so AdCard/AdDetail works
+    id:             ad.ad_id || String(ad._id),
+    material_id:    ad.ad_id,
+    ad_title:       ad.title || ad.brand || 'No Title',
+    brand_name:     ad.brand || 'Unknown',
+    like:           ad.like_count     || 0,
+    comment:        ad.comment_count  || 0,
+    share:          ad.share_count    || 0,
+    play_count:     ad.play_count     || 0,
+    ctr:            ad.ctr            || 0,
+    cost:           ad.cost           || 0,
+    objective:      ad.objective      || '',
+    objective_key:  ad.objective      || '',
+    industry_key:   ad.industry       || '',
+    industry:       ad.industry       || '',
+    is_active:      ad.is_active !== false,
+    country:        ad.country        || 'US',
+    trending_score: ad.trending_score || 0,
+    is_dropshipping:ad.is_dropshipping|| false,
+    period_days:    ad.period_days    || 7,
+    // ✅ video_info — AdCard expects this format
     video_info: {
-      cover:      coverUrl,
-      play_url:   videoUrl,
-      video_url:  videoUrl,
-      duration:   ad.video_duration || 0,
+      cover:         coverUrl,
+      origin_cover:  coverUrl,
+      play_url:      videoUrl,
+      video_url:     videoUrl,
+      hdplay:        videoUrl,
+      duration:      ad.video_duration || 0,
+      vid:           ad.ad_id || '',
+      video_url_map: videoUrl ? { '720p': videoUrl, '540p': videoUrl } : {},
     },
-    // Extra fields for detail page
-    r2_video_url:  ad.r2_video_url || '',
-    r2_cover_url:  ad.r2_cover_url || '',
-    video_url:     videoUrl,
-    cover_url:     coverUrl,
-    scraped_at:    ad.scraped_at,
-    _source:       'mongodb_tiktok',
-    _raw:          ad,
+    // Direct video/cover fields (redundant but safe)
+    r2_video_url:   ad.r2_video_url || '',
+    r2_cover_url:   ad.r2_cover_url || '',
+    video_url:      videoUrl,
+    cover_url:      coverUrl,
+    has_video:      !!(videoUrl && videoUrl.trim()),
+    scraped_at:     ad.scraped_at,
+    first_seen:     ad.first_seen,
+    _source:        'mongodb_tiktok',
+    _raw:           ad,
   };
 }
 
@@ -346,9 +358,21 @@ router.get('/tiktok', protect, async (req, res) => {
 
     // ── Country fallback: agar requested country ka data nahi hai to US use karo ──
     const requestedCountry = (country && country !== 'ALL') ? country.toUpperCase() : null;
+    const { dropshipping = 'false' } = req.query;
     const buildQuery = (c) => {
-      const q = { hidden: { $ne: true }, is_phash_duplicate: { $ne: true } };
+      const q = {
+        hidden: { $ne: true },
+        is_phash_duplicate: { $ne: true },
+        // Sirf ads jinke paas video ya cover hai
+        $or: [
+          { r2_video_url: { $ne: '' } },
+          { video_url:    { $ne: '' } },
+          { cover_url:    { $ne: '' } },
+        ],
+      };
       if (c) q.country = c;
+      // Dropshipping filter
+      if (dropshipping === 'true') q.is_dropshipping = true;
       return q;
     };
 
