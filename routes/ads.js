@@ -340,18 +340,25 @@ router.get('/tiktok', protect, async (req, res) => {
   const { country = 'US', order = 'like', period = '7', page = 1, limit = 20 } = req.query;
 
   try {
-    // ── Step 1: MongoDB tiktokads se try karo (scraper ka data) ────────────
-    if (mongoose.connection.readyState === 1) {
-      const query = { hidden: { $ne: true }, is_phash_duplicate: { $ne: true } };
-      if (country && country !== 'ALL') query.country = country.toUpperCase();
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Database connected nahi hai' });
+    }
 
-      const skip = (parseInt(page) - 1) * parseInt(limit);
-      const sortField = order === 'ctr' ? { ctr: -1 } : order === 'cost' ? { cost: -1 } : { like_count: -1, trending_score: -1 };
+    // ── Country fallback: agar requested country ka data nahi hai to US use karo ──
+    const requestedCountry = (country && country !== 'ALL') ? country.toUpperCase() : null;
+    const buildQuery = (c) => {
+      const q = { hidden: { $ne: true }, is_phash_duplicate: { $ne: true } };
+      if (c) q.country = c;
+      return q;
+    };
 
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sortByOrder = order === 'ctr' ? { ctr: -1 } : order === 'cost' ? { cost: -1 } : { like_count: -1, trending_score: -1 };
+
+    const runPipeline = async (q) => {
       const pipeline = [
-        { $match: query },
+        { $match: q },
         { $sort: { trending_score: -1, like_count: -1, scraped_at: -1 } },
-        // Brand diversity — same as Meta: max 3 per brand
         { $group: { _id: '$brand', docs: { $push: '$$ROOT' }, top: { $first: '$trending_score' } } },
         { $sort: { top: -1 } },
         { $project: { docs: { $slice: ['$docs', 3] } } },
@@ -361,40 +368,44 @@ router.get('/tiktok', protect, async (req, res) => {
         { $skip: skip },
         { $limit: parseInt(limit) },
       ];
+      return TikTokAd.aggregate(pipeline);
+    };
 
-      const [adsRaw, totalRaw] = await Promise.all([
-        TikTokAd.aggregate(pipeline),
-        TikTokAd.countDocuments(query),
-      ]);
-
-      if (adsRaw.length > 0) {
-        console.log('[TikTok Route] MongoDB se serve: ' + adsRaw.length + ' ads');
-        return res.json({
-          success: true, source: 'mongodb_scraped',
-          data: { materials: adsRaw.map(normalizeTikTokForFrontend) },
-          total: totalRaw, page: parseInt(page),
-        });
-      }
-      console.log('[TikTok Route] MongoDB empty — RapidAPI fallback');
+    // Pehle requested country try karo
+    let adsRaw = [];
+    let usedCountry = requestedCountry;
+    if (requestedCountry) {
+      adsRaw = await runPipeline(buildQuery(requestedCountry));
     }
 
-    // ── Step 2: RapidAPI fallback (original behavior) ────────────────────
-    const cacheResult = await getOrFetchAdsList(
-      country, order, period,
-      async () => {
-        try { return await searchTikTokAds({ country, order, period }); }
-        catch (primaryErr) {
-          if (country !== 'US') { try { return await searchTikTokAds({ country:'US', order, period }); } catch(e){} }
-          if (period !== '30')  { try { return await searchTikTokAds({ country:'US', order:'like', period:'30' }); } catch(e){} }
-          throw primaryErr;
-        }
-      },
-      req.user?.id || null
-    );
+    // Agar 0 ads mila to US fallback
+    if (adsRaw.length === 0 && requestedCountry !== 'US') {
+      console.log(`[TikTok] ${requestedCountry} empty — US fallback`);
+      usedCountry = 'US';
+      adsRaw = await runPipeline(buildQuery('US'));
+    }
 
-    res.json({ success: true, from_cache: cacheResult.from_cache, cache_type: cacheResult.cache_type, data: cacheResult.data, source: 'rapidapi' });
+    // Agar US bhi empty — country filter hata do
+    if (adsRaw.length === 0) {
+      console.log('[TikTok] US bhi empty — no country filter');
+      usedCountry = 'ALL';
+      adsRaw = await runPipeline(buildQuery(null));
+    }
+
+    const totalRaw = await TikTokAd.countDocuments(buildQuery(usedCountry === 'ALL' ? null : usedCountry));
+
+    console.log(`[TikTok] Serve: ${adsRaw.length} ads (country: ${usedCountry})`);
+    return res.json({
+      success: true,
+      source: 'mongodb_scraped',
+      country_used: usedCountry,
+      data: { materials: adsRaw.map(normalizeTikTokForFrontend) },
+      total: totalRaw,
+      page: parseInt(page),
+    });
+
   } catch (err) {
-    if (err.response?.status === 429) return res.status(429).json({ success: false, message: 'Rate limit — thodi der baad try karo' });
+    console.error('[TikTok Route] Error:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -402,24 +413,43 @@ router.get('/tiktok', protect, async (req, res) => {
 // ─── TikTok Ad Detail ─────────────────────────────────────────────────────────
 router.get('/tiktok/:adId', protect, async (req, res) => {
   try {
-    // MongoDB se pehle try karo
-    if (mongoose.connection.readyState === 1) {
-      const ad = await TikTokAd.findOne({ ad_id: req.params.adId }).lean();
-      if (ad) {
-        // View count increment
-        TikTokAd.updateOne({ ad_id: req.params.adId }, { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }).catch(()=>{});
-        return res.json({ success: true, source: 'mongodb', data: normalizeTikTokForFrontend(ad) });
-      }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Database connected nahi hai' });
     }
-    // RapidAPI fallback
-    const result = await getOrFetchAdDetail(req.params.adId, () => getTikTokAdDetails(req.params.adId), req.user?.id || null);
-    res.json({ success: true, from_cache: result.from_cache, data: result.data });
+    const ad = await TikTokAd.findOne({ ad_id: req.params.adId }).lean();
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad nahi mili' });
+    }
+    // View count increment (background)
+    TikTokAd.updateOne(
+      { ad_id: req.params.adId },
+      { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
+    ).catch(() => {});
+    return res.json({ success: true, source: 'mongodb', data: normalizeTikTokForFrontend(ad) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
 // ─── TikTok Stats ─────────────────────────────────────────────────────────────
+
+// ─── Debug: MongoDB data check ────────────────────────────────────────────────
+router.get('/debug/tiktok', async (req, res) => {
+  try {
+    const total      = await TikTokAd.countDocuments();
+    const withR2     = await TikTokAd.countDocuments({ r2_video_url: { $ne: '' } });
+    const withVideo  = await TikTokAd.countDocuments({ video_url:    { $ne: '' } });
+    const countries  = await TikTokAd.distinct('country');
+    const sample     = await TikTokAd.findOne({ r2_video_url: { $ne: '' } })
+      .select('ad_id brand r2_video_url r2_cover_url country trending_score').lean();
+    const sampleNoR2 = await TikTokAd.findOne({ r2_video_url: '' })
+      .select('ad_id brand video_url cover_url country').lean();
+    res.json({ total, withR2Video: withR2, withVideoUrl: withVideo, countries, sample, sampleNoR2 });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/tiktok/stats/overview', protect, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) return res.json({ success: true, data: { total: 0 } });
