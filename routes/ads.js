@@ -554,8 +554,10 @@ function normalizeForFrontend(ad) {
   return {
     id:                      ad.library_id || String(ad._id),
     page_name:               ad.brand      || 'Unknown Page',
+    ad_title:                ad.title      || '',
+    ad_body:                 ad.body       || '',
     ad_creative_bodies:      ad.body       ? [ad.body]       : [],
-    ad_creative_link_titles: ad.link_title ? [ad.link_title] : [],
+    ad_creative_link_titles: ad.title      ? [ad.title] : (ad.link_title ? [ad.link_title] : []),
     ad_delivery_start_time:  ad.start_date || ad.scraped_at  || null,
     ad_delivery_stop_time:   ad.end_date   || null,
     spend:                   ad.spend                 || null,
