@@ -814,6 +814,40 @@ router.get('/meta/page/:pageId/details', protect, async (req, res) => {
   }
 });
 
+// GET /api/ads/meta/brand/:brandName — Same brand ke saare Meta ads
+router.get('/meta/brand/:brandName', protect, async (req, res) => {
+  try {
+    const brandName  = decodeURIComponent(req.params.brandName || '').trim();
+    const excludeId  = req.query.exclude || '';
+    const limitCount = Math.min(parseInt(req.query.limit) || 20, 50);
+
+    if (!brandName) return res.status(400).json({ success: false, message: 'Brand name chahiye' });
+
+    if (!MetaAd || mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, data: [], total: 0 });
+    }
+
+    const query = {
+      brand: { $regex: `^${brandName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+      hidden: { $ne: true },
+      is_phash_duplicate: { $ne: true },
+    };
+    if (excludeId) {
+      query.library_id = { $ne: excludeId };
+    }
+
+    const ads = await MetaAd.find(query)
+      .sort({ active: -1, scraped_at: -1 })
+      .limit(limitCount)
+      .lean();
+
+    const normalized = ads.map(normalizeForFrontend);
+    res.json({ success: true, data: normalized, total: normalized.length });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── AliExpress ───────────────────────────────────────────────────────────────
 router.get('/aliexpress', protect, async (req, res) => {
   try {
