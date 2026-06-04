@@ -1,8 +1,14 @@
+// models/User.js
 const mongoose = require('mongoose');
 
 const deviceSchema = new mongoose.Schema({
   fingerprint: { type: String, required: true },
   lastSeen:    { type: Date, default: Date.now },
+}, { _id: false });
+
+const refreshTokenSchema = new mongoose.Schema({
+  token:     { type: String, required: true },
+  expiresAt: { type: Date,   required: true },
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
@@ -13,25 +19,27 @@ const userSchema = new mongoose.Schema({
 
   // Search tracking — har roz reset hoti hai
   searchCount:     { type: Number, default: 0 },
-  searchResetDate: { type: String, default: '' }, // "Mon Jun 04 2026"
+  searchResetDate: { type: String, default: '' },
 
   // Saved ads
   savedAds: [{ type: String }],
 
-  // Device sessions — User ke andar hi rakhe (alag collection ki zarurat nahi)
+  // Device sessions
   devices: { type: [deviceSchema], default: [] },
+
+  // Refresh tokens — User ke andar hi, alag collection nahi
+  refreshTokens: { type: [refreshTokenSchema], default: [] },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
 
-// Save se pehle updatedAt update karo
 userSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
 
-// Virtual: id = firebaseUid (backward compatible — baaki code mein user.id kaam karega)
+// Virtual: id = firebaseUid (backward compatible)
 userSchema.virtual('id').get(function () {
   return this.firebaseUid;
 });
