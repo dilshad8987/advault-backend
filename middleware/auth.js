@@ -126,8 +126,8 @@ async function protect(req, res, next) {
     const cachedDevice = getCached(deviceCache, cacheKey, DEVICE_TTL);
 
     if (!cachedDevice) {
-      const allowed = isDeviceAllowed(user.id, fingerprint);
-      if (!allowed) registerDevice(user.id, fingerprint);
+      const allowed = await isDeviceAllowed(user.id, fingerprint);
+      if (!allowed) await registerDevice(user.id, fingerprint);
       setCache(deviceCache, cacheKey, true);
     }
 
