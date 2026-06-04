@@ -13,6 +13,7 @@ const {
 const {
   findUserById,
   findUserByEmail,
+  createUser,
   storeRefreshToken,
   getRefreshToken,
   deleteRefreshToken,
@@ -45,7 +46,7 @@ router.post('/register', async (req, res) => {
     if (!pwCheck.valid)
       return res.status(400).json({ success: false, message: pwCheck.message });
 
-    // Firebase mein user banao
+    // Firebase mein user banao (sirf password auth ke liye)
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().createUser({
@@ -59,26 +60,23 @@ router.post('/register', async (req, res) => {
       throw err;
     }
 
-    // Firestore mein user record banao
-    await admin.firestore().collection('users').doc(firebaseUser.uid).set({
-      id:           firebaseUser.uid,
-      name:         name.trim(),
-      email:        email.toLowerCase().trim(),
-      plan:         'free',
-      searchCount:  0,
-      savedAds:     [],
-      createdAt:    admin.firestore.FieldValue.serverTimestamp(),
+    // MongoDB mein user record banao (Firestore nahi)
+    await createUser({
+      firebaseUid: firebaseUser.uid,
+      name:        name.trim(),
+      email:       email.toLowerCase().trim(),
+      plan:        'free',
     });
 
     // Tokens banao
     const payload      = { id: firebaseUser.uid, email: firebaseUser.email, plan: 'free' };
     const accessToken  = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
-    storeRefreshToken(refreshToken, firebaseUser.uid);
+    await storeRefreshToken(refreshToken, firebaseUser.uid);
 
     // Device register karo
     const fingerprint = extractFingerprint(req);
-    registerDevice(firebaseUser.uid, fingerprint);
+    await registerDevice(firebaseUser.uid, fingerprint);
 
     return res.status(201).json({
       success: true,
@@ -142,10 +140,10 @@ router.post('/login', async (req, res) => {
     const payload      = { id: uid, email: user.email, plan: user.plan || 'free' };
     const accessToken  = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
-    storeRefreshToken(refreshToken, uid);
+    await storeRefreshToken(refreshToken, uid);
 
     const fingerprint = extractFingerprint(req);
-    registerDevice(uid, fingerprint);
+    await registerDevice(uid, fingerprint);
 
     return res.json({
       success: true,
@@ -167,7 +165,7 @@ router.post('/login', async (req, res) => {
 
 // ─── REFRESH TOKEN ────────────────────────────────────────────────────────────
 // POST /api/auth/refresh
-router.post('/refresh', (req, res) => {
+router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken)
@@ -177,7 +175,7 @@ router.post('/refresh', (req, res) => {
     if (!decoded?.id)
       return res.status(401).json({ success: false, message: 'Refresh token invalid ya expire' });
 
-    const stored = getRefreshToken(refreshToken);
+    const stored = await getRefreshToken(refreshToken);
     if (!stored)
       return res.status(401).json({ success: false, message: 'Token revoke ho chuka hai. Dobara login karo.' });
 
@@ -191,10 +189,10 @@ router.post('/refresh', (req, res) => {
 
 // ─── LOGOUT ───────────────────────────────────────────────────────────────────
 // POST /api/auth/logout
-router.post('/logout', protect, (req, res) => {
+router.post('/logout', protect, async (req, res) => {
   try {
     const { refreshToken } = req.body;
-    if (refreshToken) deleteRefreshToken(refreshToken);
+    if (refreshToken) await deleteRefreshToken(refreshToken);
     invalidateUserCache(req.user.id);
     return res.json({ success: true, message: 'Logout ho gaye' });
   } catch (err) {
