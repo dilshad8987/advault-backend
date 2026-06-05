@@ -106,9 +106,10 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email aur password daalo' });
 
     // Firebase REST API se sign-in karo (Admin SDK se password verify nahi hota)
-    const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
+    // Fix: .env mein variable ka naam FIREBASE_WEB_API_KEY hai, FIREBASE_API_KEY nahi
+    const FIREBASE_API_KEY = process.env.FIREBASE_WEB_API_KEY || process.env.FIREBASE_API_KEY;
     if (!FIREBASE_API_KEY)
-      return res.status(500).json({ success: false, message: 'Server config error' });
+      return res.status(500).json({ success: false, message: 'Server config error: FIREBASE_WEB_API_KEY missing' });
 
     const fbRes = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
