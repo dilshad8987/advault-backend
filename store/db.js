@@ -68,12 +68,17 @@ async function storeRefreshToken(token, userId) {
     if (!isMongoReady()) return;
     const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
     const now       = new Date();
+
+    // Fix 1: $push + $pull same array pe ek saath nahi chalte MongoDB mein
+    // Pehle expired tokens hata do, phir naya push karo
+    await User.updateOne(
+      { firebaseUid: userId },
+      { $pull: { refreshTokens: { expiresAt: { $lt: now } } } }
+    );
     await User.updateOne(
       { firebaseUid: userId },
       {
-        // Naya token push karo + saath mein expired tokens saaf karo
         $push: { refreshTokens: { token, expiresAt } },
-        $pull: { refreshTokens: { expiresAt: { $lt: now } } },
         $set:  { updatedAt: now },
       }
     );
@@ -85,9 +90,10 @@ async function storeRefreshToken(token, userId) {
 async function getRefreshToken(token) {
   try {
     if (!isMongoReady()) return null;
+    // Fix 2: firebaseUid projection mein add kiya — warna user.firebaseUid undefined aata tha
     const user = await User.findOne(
       { 'refreshTokens.token': token },
-      { 'refreshTokens.$': 1 }
+      { 'refreshTokens.$': 1, firebaseUid: 1 }
     ).lean();
     if (!user?.refreshTokens?.[0]) return null;
 
