@@ -94,7 +94,8 @@ function detectVPN(req) {
   const xForwardedFor = req.headers['x-forwarded-for'];
   if (xForwardedFor) {
     const ips = xForwardedFor.split(',').map(ip => ip.trim());
-    if (ips.length > 2) return { detected: true, reason: 'Multiple IP chain mili (VPN/proxy chain)' };
+    // Fix 5: Railway/Cloudflare khud 2 IPs add karte hain, isliye threshold >3 rakha
+    if (ips.length > 3) return { detected: true, reason: 'Multiple IP chain mili (VPN/proxy chain)' };
   }
 
   const ua = (req.headers['user-agent'] || '').toLowerCase();
@@ -122,12 +123,13 @@ async function protect(req, res, next) {
     if (!user)
       return res.status(401).json({ success: false, message: 'User nahi mila' });
 
-    const cacheKey    = `${user.id}:${fingerprint}`;
+    const cacheKey    = `${user.firebaseUid}:${fingerprint}`;
     const cachedDevice = getCached(deviceCache, cacheKey, DEVICE_TTL);
 
     if (!cachedDevice) {
-      const allowed = await isDeviceAllowed(user.id, fingerprint);
-      if (!allowed) await registerDevice(user.id, fingerprint);
+      // Fix 3: user.id virtual .lean() ke saath kaam nahi karta, firebaseUid use karo
+      const allowed = await isDeviceAllowed(user.firebaseUid, fingerprint);
+      if (!allowed) await registerDevice(user.firebaseUid, fingerprint);
       setCache(deviceCache, cacheKey, true);
     }
 
