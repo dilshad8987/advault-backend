@@ -34,9 +34,8 @@ const userSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-userSchema.pre('save', function (next) {
+userSchema.pre('save', async function () {
   this.updatedAt = new Date();
-  next();
 });
 
 // Virtual: id = firebaseUid (backward compatible)
