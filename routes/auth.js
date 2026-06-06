@@ -116,7 +116,10 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password)
-      return res.status(400).json({ success: false, message: 'Email aur password daalo' });
+      return res.status(400).json({ success: false, message: 'Email and password are required.' });
+
+    if (isTempEmail(email))
+      return res.status(400).json({ success: false, message: 'Invalid email.' });
 
     // Firebase REST API se sign-in karo (Admin SDK se password verify nahi hota)
     // Fix: .env mein variable ka naam FIREBASE_WEB_API_KEY hai, FIREBASE_API_KEY nahi
