@@ -38,11 +38,11 @@ router.post('/register', async (req, res) => {
 
     // Validation
     if (!name || name.trim().length < 2)
-      return res.status(400).json({ success: false, message: 'Valid naam daalo (min 2 chars)' });
+      return res.status(400).json({ success: false, message: 'Name is too short.' });
     if (!email || !isValidEmail(email))
-      return res.status(400).json({ success: false, message: 'Valid email daalo' });
+      return res.status(400).json({ success: false, message: 'Invalid email.' });
     if (isTempEmail(email))
-      return res.status(400).json({ success: false, message: 'Temporary email allowed nahi hai' });
+      return res.status(400).json({ success: false, message: 'Invalid email.' });
 
     const pwCheck = validateStrongPassword(password);
     if (!pwCheck.valid)
@@ -51,16 +51,16 @@ router.post('/register', async (req, res) => {
     // ─── VPN Check ────────────────────────────────────────────────────────────
     const vpnResult = detectVPN(req);
     if (vpnResult.detected)
-      return res.status(403).json({ success: false, message: 'VPN/Proxy use karke register nahi kar sakte. VPN band karo aur dobara try karo.' });
+      return res.status(403).json({ success: false, message: 'VPN/Proxy not allowed.' });
 
     // ─── Device Multi-Account Check ───────────────────────────────────────────
-    // Same device se 1 se zyada account nahi bana sakte
+    // One account per device
     const fingerprint   = extractFingerprint(req);
     const existingAccts = await getAccountsByDevice(fingerprint);
     if (existingAccts.length >= 1)
-      return res.status(403).json({ success: false, message: 'Is device se pehle se ek account bana hua hai. Ek device pe sirf ek account allowed hai.' });
+      return res.status(403).json({ success: false, message: 'Account already exists on this device.' });
 
-    // Firebase mein user banao (sirf password auth ke liye)
+    // Create user in Firebase
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().createUser({
@@ -70,11 +70,11 @@ router.post('/register', async (req, res) => {
       });
     } catch (err) {
       if (err.code === 'auth/email-already-exists')
-        return res.status(409).json({ success: false, message: 'Yeh email pehle se registered hai. Login karo.' });
+        return res.status(409).json({ success: false, message: 'Email already registered.' });
       throw err;
     }
 
-    // MongoDB mein user record banao (Firestore nahi)
+    // Create user record in MongoDB
     await createUser({
       firebaseUid: firebaseUser.uid,
       name:        name.trim(),
@@ -88,12 +88,12 @@ router.post('/register', async (req, res) => {
     const refreshToken = generateRefreshToken(payload);
     await storeRefreshToken(refreshToken, firebaseUser.uid);
 
-    // Device register karo (fingerprint upar check mein already extract hua)
+    // Register device fingerprint
     await registerDevice(firebaseUser.uid, fingerprint);
 
     return res.status(201).json({
       success: true,
-      message: 'Account ban gaya! Welcome to AdVault 🎉',
+      message: 'Welcome to AdVault!',
       accessToken,
       refreshToken,
       user: {
@@ -105,7 +105,7 @@ router.post('/register', async (req, res) => {
     });
   } catch (err) {
     console.error('[Auth] register error:', err.message);
-    return res.status(500).json({ success: false, message: 'Register fail hua. Dobara try karo.' });
+    return res.status(500).json({ success: false, message: 'Registration failed. Try again.' });
   }
 });
 
@@ -121,11 +121,11 @@ router.post('/login', async (req, res) => {
     if (isTempEmail(email))
       return res.status(400).json({ success: false, message: 'Invalid email.' });
 
-    // Firebase REST API se sign-in karo (Admin SDK se password verify nahi hota)
-    // Fix: .env mein variable ka naam FIREBASE_WEB_API_KEY hai, FIREBASE_API_KEY nahi
+    // Sign in via Firebase REST API
+    // FIREBASE_WEB_API_KEY used (not FIREBASE_API_KEY)
     const FIREBASE_API_KEY = process.env.FIREBASE_WEB_API_KEY || process.env.FIREBASE_API_KEY;
     if (!FIREBASE_API_KEY)
-      return res.status(500).json({ success: false, message: 'Server config error: FIREBASE_WEB_API_KEY missing' });
+      return res.status(500).json({ success: false, message: 'Server configuration error.' });
 
     const fbRes = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
@@ -141,18 +141,18 @@ router.post('/login', async (req, res) => {
     if (!fbRes.ok) {
       const code = fbData?.error?.message || '';
       if (code.includes('EMAIL_NOT_FOUND') || code.includes('INVALID_PASSWORD') || code.includes('INVALID_LOGIN_CREDENTIALS'))
-        return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
+        return res.status(401).json({ success: false, message: 'Invalid email or password.' });
       if (code.includes('TOO_MANY_ATTEMPTS'))
-        return res.status(429).json({ success: false, message: 'Bahut zyada login attempts. Thodi der baad try karo.' });
+        return res.status(429).json({ success: false, message: 'Too many attempts. Try again later.' });
       throw new Error(code);
     }
 
-    // Firestore se user data fetch karo
+    // Fetch user data
     const uid  = fbData.localId;
     const user = await findUserById(uid);
 
     if (!user)
-      return res.status(404).json({ success: false, message: 'User record nahi mila. Support se contact karo.' });
+      return res.status(404).json({ success: false, message: 'Account not found.' });
 
     const payload      = { id: uid, email: user.email, plan: user.plan || 'free' };
     const accessToken  = generateAccessToken(payload);
@@ -164,7 +164,7 @@ router.post('/login', async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Login ho gaye!',
+      message: 'Signed in.',
       accessToken,
       refreshToken,
       user: {
@@ -176,7 +176,7 @@ router.post('/login', async (req, res) => {
     });
   } catch (err) {
     console.error('[Auth] login error:', err.message);
-    return res.status(500).json({ success: false, message: 'Login fail hua. Dobara try karo.' });
+    return res.status(500).json({ success: false, message: 'Login failed. Try again.' });
   }
 });
 
@@ -186,21 +186,21 @@ router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken)
-      return res.status(401).json({ success: false, message: 'Refresh token chahiye' });
+      return res.status(401).json({ success: false, message: 'Session expired.' });
 
     const decoded = verifyRefreshToken(refreshToken);
     if (!decoded?.id)
-      return res.status(401).json({ success: false, message: 'Refresh token invalid ya expire' });
+      return res.status(401).json({ success: false, message: 'Session expired.' });
 
     const stored = await getRefreshToken(refreshToken);
     if (!stored)
-      return res.status(401).json({ success: false, message: 'Token revoke ho chuka hai. Dobara login karo.' });
+      return res.status(401).json({ success: false, message: 'Session revoked. Sign in again.' });
 
     const newAccessToken = generateAccessToken({ id: decoded.id, email: decoded.email, plan: decoded.plan });
     return res.json({ success: true, accessToken: newAccessToken });
   } catch (err) {
     console.error('[Auth] refresh error:', err.message);
-    return res.status(401).json({ success: false, message: 'Token refresh fail' });
+    return res.status(401).json({ success: false, message: 'Session refresh failed.' });
   }
 });
 
@@ -211,10 +211,10 @@ router.post('/logout', protect, async (req, res) => {
     const { refreshToken } = req.body;
     if (refreshToken) await deleteRefreshToken(refreshToken);
     invalidateUserCache(req.user.id);
-    return res.json({ success: true, message: 'Logout ho gaye' });
+    return res.json({ success: true, message: 'Signed out.' });
   } catch (err) {
     console.error('[Auth] logout error:', err.message);
-    return res.status(500).json({ success: false, message: 'Logout fail' });
+    return res.status(500).json({ success: false, message: 'Sign out failed.' });
   }
 });
 
