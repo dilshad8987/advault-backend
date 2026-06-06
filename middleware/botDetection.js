@@ -33,22 +33,23 @@ function botDetection(req, res, next) {
 
 // Fix 5: SHA-256 hash on 8 signals instead of weak djb2 on 4
 function extractFingerprint(req) {
+  // IP hata diya — VPN pe IP change hoti hai toh fingerprint badal jaata tha
+  // Ab browser-level signals use karte hain jo VPN se nahi badte
   const signals = [
-    req.ip || '',
     req.headers['user-agent'] || '',
-    req.headers['accept-language'] || '',
-    req.headers['accept-encoding'] || '',
-    req.headers['accept'] || '',
-    req.headers['sec-ch-ua'] || '',              // Chrome UA hint (OS/browser version)
-    req.headers['sec-ch-ua-platform'] || '',     // OS hint (Windows/macOS/Linux)
-    req.headers['sec-fetch-site'] || '',         // request origin context
+    req.headers['accept-language'] || '',        // Browser language setting
+    req.headers['accept-encoding'] || '',        // Browser encoding support
+    req.headers['accept'] || '',                 // Browser MIME preferences
+    req.headers['sec-ch-ua'] || '',              // Chrome browser + version hint
+    req.headers['sec-ch-ua-platform'] || '',     // OS (Windows/macOS/Linux/Android)
+    req.headers['sec-ch-ua-mobile'] || '',       // Mobile ya desktop
   ];
 
   const raw  = signals.join('|||');
   const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32);
 
-  // x-device-id = client UUID (localStorage pe stored)
-  // Server hash ke saath combine — never trusted alone
+  // x-device-id = client UUID jo frontend localStorage mein save karta hai
+  // Yeh sabse reliable signal hai — sirf agar client bhejon toh
   const clientDeviceId = req.headers['x-device-id'];
   return clientDeviceId
     ? `client_${clientDeviceId}_${hash}`
