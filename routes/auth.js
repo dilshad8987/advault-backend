@@ -18,6 +18,7 @@ const {
   getRefreshToken,
   deleteRefreshToken,
   registerDevice,
+  getAccountsByDevice,
 } = require('../store/db');
 const {
   validateStrongPassword,
@@ -25,6 +26,7 @@ const {
   isTempEmail,
   protect,
   invalidateUserCache,
+  detectVPN,
 } = require('../middleware/auth');
 const { extractFingerprint } = require('../middleware/botDetection');
 
@@ -45,6 +47,18 @@ router.post('/register', async (req, res) => {
     const pwCheck = validateStrongPassword(password);
     if (!pwCheck.valid)
       return res.status(400).json({ success: false, message: pwCheck.message });
+
+    // ─── VPN Check ────────────────────────────────────────────────────────────
+    const vpnResult = detectVPN(req);
+    if (vpnResult.detected)
+      return res.status(403).json({ success: false, message: 'VPN/Proxy use karke register nahi kar sakte. VPN band karo aur dobara try karo.' });
+
+    // ─── Device Multi-Account Check ───────────────────────────────────────────
+    // Same device se 1 se zyada account nahi bana sakte
+    const fingerprint   = extractFingerprint(req);
+    const existingAccts = await getAccountsByDevice(fingerprint);
+    if (existingAccts.length >= 1)
+      return res.status(403).json({ success: false, message: 'Is device se pehle se ek account bana hua hai. Ek device pe sirf ek account allowed hai.' });
 
     // Firebase mein user banao (sirf password auth ke liye)
     let firebaseUser;
@@ -74,8 +88,7 @@ router.post('/register', async (req, res) => {
     const refreshToken = generateRefreshToken(payload);
     await storeRefreshToken(refreshToken, firebaseUser.uid);
 
-    // Device register karo
-    const fingerprint = extractFingerprint(req);
+    // Device register karo (fingerprint upar check mein already extract hua)
     await registerDevice(firebaseUser.uid, fingerprint);
 
     return res.status(201).json({
