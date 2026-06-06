@@ -12,7 +12,7 @@ const { getCacheStats } = require('../services/cache');
 router.get('/profile', protect, async (req, res) => {
   try {
     const user = await findUserById(req.user.id);
-    if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
     const limitInfo = checkSearchLimit(user);
     res.json({
@@ -33,7 +33,7 @@ router.get('/profile', protect, async (req, res) => {
     });
   } catch (err) {
     console.error('[User] profile error:', err.message);
-    res.status(500).json({ success: false, message: 'Profile load fail' });
+    res.status(500).json({ success: false, message: 'Failed to load profile.' });
   }
 });
 
@@ -45,13 +45,13 @@ router.put('/profile', protect, async (req, res) => {
   try {
     const { name } = req.body;
     if (!name || name.trim().length < 2)
-      return res.status(400).json({ success: false, message: 'Valid name daalo' });
+      return res.status(400).json({ success: false, message: 'Invalid name.' });
 
     await updateUser(req.user.id, { name: name.trim() });
-    res.json({ success: true, message: 'Profile update ho gayi' });
+    res.json({ success: true, message: 'Profile updated.' });
   } catch (err) {
     console.error('[User] update profile error:', err.message);
-    res.status(500).json({ success: false, message: 'Profile update fail' });
+    res.status(500).json({ success: false, message: 'Failed to update profile.' });
   }
 });
 
@@ -72,7 +72,7 @@ router.get('/devices', protect, async (req, res) => {
     });
   } catch (err) {
     console.error('[User] devices error:', err.message);
-    res.status(500).json({ success: false, message: 'Devices load fail' });
+    res.status(500).json({ success: false, message: 'Failed to load devices.' });
   }
 });
 
@@ -83,10 +83,10 @@ router.get('/devices', protect, async (req, res) => {
 router.delete('/devices/:deviceId', protect, async (req, res) => {
   try {
     await removeDevice(req.user.id, req.params.deviceId);
-    res.json({ success: true, message: 'Device remove ho gayi.' });
+    res.json({ success: true, message: 'Device removed.' });
   } catch (err) {
     console.error('[User] remove device error:', err.message);
-    res.status(500).json({ success: false, message: 'Device remove fail' });
+    res.status(500).json({ success: false, message: 'Failed to remove device.' });
   }
 });
 
@@ -110,7 +110,7 @@ router.get('/plan', protect, (req, res) => {
 });
 
 // ================================
-// ADMIN - Cache stats (sirf development mein)
+// ADMIN - Cache stats (dev only)
 // GET /api/user/cache-stats
 // ================================
 router.get('/cache-stats', protect, (req, res) => {
