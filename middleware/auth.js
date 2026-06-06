@@ -53,35 +53,16 @@ function validateStrongPassword(password) {
   return { valid: true };
 }
 
-// ─── Fix 3: Email Validators ───────────────────────────────────────────────────
+// ─── Email Validator — sirf Gmail allowed ──────────────────────────────────────
+// Valid: arsh@gmail.com, arsh63@gmail.com — local part mein sirf letters/numbers
 function isValidEmail(email) {
-  return /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(email);
+  return /^[a-zA-Z0-9]+@gmail\.com$/.test(email?.trim());
 }
 
-const TEMP_EMAIL_DOMAINS = new Set([
-  'mailinator.com','guerrillamail.com','tempmail.com','throwam.com',
-  'yopmail.com','sharklasers.com','guerrillamailblock.com','grr.la',
-  'guerrillamail.info','guerrillamail.biz','guerrillamail.de','guerrillamail.net',
-  'guerrillamail.org','spam4.me','trashmail.com','trashmail.me','trashmail.net',
-  'trashmail.at','trashmail.io','trashmail.org','trashmail.xyz',
-  'dispostable.com','mailnull.com','maildrop.cc','spamgourmet.com',
-  'fakeinbox.com','mailnesia.com','discard.email','discardmail.com',
-  'temp-mail.org','temp-mail.io','tempinbox.com','10minutemail.com',
-  '10minutemail.net','emailondeck.com','getairmail.com','mohmal.com',
-  'mytempemail.com','put2.net','spam.la','spamfree24.org','spamhole.com',
-  'spaml.de','spaml.com','tempail.com','tempalias.com','tempr.email',
-  'throwam.com','trash-mail.com','trashdevil.com','trashdevil.de',
-  'wegwerfmail.de','wegwerfmail.net','wegwerfmail.org','whyspam.me',
-  'yopmail.fr','yopmail.pp.ua','luxusmail.org','junkmail.gq',
-  'spamcorpse.com','spamspot.com','burnermail.io','harakirimail.com',
-  'throwaway.email','owlpic.com','drdrb.net','drdrb.com',
-]);
-
+// isTempEmail — ab zaroorat nahi kyunki sirf gmail allow hai
+// Backward compat ke liye rakha hai
 function isTempEmail(email) {
-  if (!email || typeof email !== 'string') return true;
-  const domain = email.split('@')[1]?.toLowerCase();
-  if (!domain) return true;
-  return TEMP_EMAIL_DOMAINS.has(domain);
+  return !isValidEmail(email);
 }
 
 // ─── Fix 4: VPN / Proxy Detection ─────────────────────────────────────────────
