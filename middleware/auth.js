@@ -1,6 +1,6 @@
 // middleware/auth.js
 // UPDATED: validateStrongPassword, isTempEmail, detectVPN, isValidEmail
-// yahan se export hoti hain taaki routes/auth.js import kar sake
+// Exports for routes/auth.js
 
 const { verifyAccessToken } = require('../utils/jwt');
 const { findUserById, isDeviceAllowed, registerDevice } = require('../store/db');
@@ -39,17 +39,17 @@ async function getCachedUser(userId) {
 // Rules: min 8 chars, uppercase, lowercase, number, special char
 function validateStrongPassword(password) {
   if (!password || typeof password !== 'string')
-    return { valid: false, message: 'Password daalna zaroori hai.' };
+    return { valid: false, message: 'Password is required.' };
   if (password.length < 8)
-    return { valid: false, message: 'Password kam se kam 8 characters ka hona chahiye.' };
+    return { valid: false, message: 'Min 8 characters.' };
   if (!/[A-Z]/.test(password))
-    return { valid: false, message: 'Password mein kam se kam 1 uppercase letter hona chahiye (A-Z).' };
+    return { valid: false, message: 'Add an uppercase letter.' };
   if (!/[a-z]/.test(password))
-    return { valid: false, message: 'Password mein kam se kam 1 lowercase letter hona chahiye (a-z).' };
+    return { valid: false, message: 'Add a lowercase letter.' };
   if (!/\d/.test(password))
-    return { valid: false, message: 'Password mein kam se kam 1 number hona chahiye (0-9).' };
+    return { valid: false, message: 'Add a number.' };
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
-    return { valid: false, message: 'Password mein kam se kam 1 special character hona chahiye (!@#$%^&* etc).' };
+    return { valid: false, message: 'Add a special character.' };
   return { valid: true };
 }
 
@@ -60,7 +60,7 @@ function isValidEmail(email) {
   return /^[a-zA-Z0-9]+@gmail\.com$/.test(email?.trim());
 }
 
-// isTempEmail — TEMP_DOMAINS list hata di, sirf gmail allowed hai ab
+// isTempEmail — only Gmail allowed now
 function isTempEmail(email) {
   return !isValidEmail(email);
 }
@@ -69,20 +69,20 @@ function isTempEmail(email) {
 function detectVPN(req) {
   const via     = req.headers['via'];
   const proxyId = req.headers['x-proxy-id'];
-  if (via)     return { detected: true, reason: 'HTTP Proxy header mila (Via)' };
-  if (proxyId) return { detected: true, reason: 'Proxy ID header mila' };
+  if (via)     return { detected: true, reason: 'HTTP proxy detected.' };
+  if (proxyId) return { detected: true, reason: 'Proxy detected.' };
 
   const xForwardedFor = req.headers['x-forwarded-for'];
   if (xForwardedFor) {
     const ips = xForwardedFor.split(',').map(ip => ip.trim());
-    // Fix 5: Railway/Cloudflare khud 2 IPs add karte hain, isliye threshold >3 rakha
-    if (ips.length > 3) return { detected: true, reason: 'Multiple IP chain mili (VPN/proxy chain)' };
+    // Railway/Cloudflare add extra IPs, threshold >3
+    if (ips.length > 3) return { detected: true, reason: 'VPN/proxy chain detected.' };
   }
 
   const ua = (req.headers['user-agent'] || '').toLowerCase();
   const vpnAgents = ['nordvpn','expressvpn','surfshark','protonvpn','cyberghost','ipvanish','purevpn'];
   if (vpnAgents.some(v => ua.includes(v)))
-    return { detected: true, reason: 'VPN client user-agent detect hua' };
+    return { detected: true, reason: 'VPN client detected.' };
 
   return { detected: false };
 }
@@ -92,23 +92,23 @@ async function protect(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer '))
-      return res.status(401).json({ success: false, message: 'Login karo pehle' });
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
 
     const token   = authHeader.split(' ')[1];
     const decoded = verifyAccessToken(token);
     if (!decoded?.id)
-      return res.status(401).json({ success: false, message: 'Token expire ho gaya. Dobara login karo.' });
+      return res.status(401).json({ success: false, message: 'Session expired.' });
 
     const fingerprint = extractFingerprint(req);
     const user        = await getCachedUser(decoded.id);
     if (!user)
-      return res.status(401).json({ success: false, message: 'User nahi mila' });
+      return res.status(401).json({ success: false, message: 'User not found.' });
 
     const cacheKey    = `${user.firebaseUid}:${fingerprint}`;
     const cachedDevice = getCached(deviceCache, cacheKey, DEVICE_TTL);
 
     if (!cachedDevice) {
-      // Fix 3: user.id virtual .lean() ke saath kaam nahi karta, firebaseUid use karo
+      // user.id virtual fails with .lean(), use firebaseUid
       const allowed = await isDeviceAllowed(user.firebaseUid, fingerprint);
       if (!allowed) await registerDevice(user.firebaseUid, fingerprint);
       setCache(deviceCache, cacheKey, true);
@@ -119,20 +119,20 @@ async function protect(req, res, next) {
     next();
   } catch (err) {
     console.error('[Auth] protect error:', err.message);
-    return res.status(401).json({ success: false, message: 'Authentication fail' });
+    return res.status(401).json({ success: false, message: 'Authentication failed.' });
   }
 }
 
 // ─── Plan Guards ───────────────────────────────────────────────────────────────
 function requirePro(req, res, next) {
   if (req.user.plan === 'free')
-    return res.status(403).json({ success: false, message: 'Pro plan chahiye', upgrade: true });
+    return res.status(403).json({ success: false, message: 'Pro plan required.', upgrade: true });
   next();
 }
 
 function requireAgency(req, res, next) {
   if (req.user.plan !== 'agency')
-    return res.status(403).json({ success: false, message: 'Agency plan chahiye', upgrade: true });
+    return res.status(403).json({ success: false, message: 'Agency plan required.', upgrade: true });
   next();
 }
 
