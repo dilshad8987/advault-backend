@@ -191,6 +191,21 @@ async function getDeviceCount(userId) {
     return 0;
   }
 }
+// Ek device fingerprint pe kitne accounts hain — VPN se multiple account block karne ke liye
+async function getAccountsByDevice(fingerprint) {
+  try {
+    if (!isMongoReady()) return [];
+    const users = await User.find(
+      { 'devices.fingerprint': fingerprint },
+      { firebaseUid: 1, email: 1, createdAt: 1 }
+    ).lean();
+    return users || [];
+  } catch (err) {
+    console.error('[DB] getAccountsByDevice error:', err.message);
+    return [];
+  }
+}
+
 
 // ─── Search Count Helpers ──────────────────────────────────────────────────────
 
@@ -242,7 +257,8 @@ module.exports = {
   removeDevice,
   getUserDevices,
   getDeviceCount,
-  getUserDeviceCount: getDeviceCount, // alias — backward compat
+  getUserDeviceCount: getDeviceCount,
+  getAccountsByDevice, // alias — backward compat
 
   // Search
   checkSearchLimit,
