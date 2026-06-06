@@ -53,14 +53,14 @@ function validateStrongPassword(password) {
   return { valid: true };
 }
 
-// ─── Email Validator — sirf Gmail allowed ──────────────────────────────────────
-// Valid: arsh@gmail.com, arsh63@gmail.com — local part mein sirf letters/numbers
+// ─── Email Validators — sirf Gmail allowed ─────────────────────────────────────
+// Valid: arsh@gmail.com, arsh63@gmail.com
+// Invalid: arsh@yahoo.com, arsh.k@gmail.com, arsh@tempmail.com
 function isValidEmail(email) {
   return /^[a-zA-Z0-9]+@gmail\.com$/.test(email?.trim());
 }
 
-// isTempEmail — ab zaroorat nahi kyunki sirf gmail allow hai
-// Backward compat ke liye rakha hai
+// isTempEmail — TEMP_DOMAINS list hata di, sirf gmail allowed hai ab
 function isTempEmail(email) {
   return !isValidEmail(email);
 }
