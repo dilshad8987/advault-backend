@@ -29,8 +29,12 @@ const {
   detectVPN,
 } = require('../middleware/auth');
 const { extractFingerprint } = require('../middleware/botDetection');
+const bcrypt         = require('bcryptjs');
+const crypto         = require('crypto');
+const Otp            = require('../models/Otp');
+const { sendOtpEmail } = require('../services/emailService');
 
-// ─── REGISTER ─────────────────────────────────────────────────────────────────
+// ─── REGISTER — Step 1: Validate + send OTP ──────────────────────────────────
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
@@ -41,30 +45,101 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Name is too short.' });
     if (!email || !isValidEmail(email))
       return res.status(400).json({ success: false, message: 'Invalid email.' });
-    if (isTempEmail(email))
-      return res.status(400).json({ success: false, message: 'Invalid email.' });
 
     const pwCheck = validateStrongPassword(password);
     if (!pwCheck.valid)
       return res.status(400).json({ success: false, message: pwCheck.message });
 
-    // ─── VPN Check ────────────────────────────────────────────────────────────
+    // VPN Check
     const vpnResult = detectVPN(req);
     if (vpnResult.detected)
       return res.status(403).json({ success: false, message: 'VPN/Proxy not allowed.' });
 
-    // ─── Device Multi-Account Check ───────────────────────────────────────────
-    // One account per device
+    // Device multi-account check
     const fingerprint   = extractFingerprint(req);
     const existingAccts = await getAccountsByDevice(fingerprint);
     if (existingAccts.length >= 1)
       return res.status(403).json({ success: false, message: 'Account already exists on this device.' });
 
-    // Create user in Firebase
+    // Email already registered check
+    try {
+      await admin.auth().getUserByEmail(email.toLowerCase().trim());
+      return res.status(409).json({ success: false, message: 'Email already registered.' });
+    } catch (err) {
+      if (err.code !== 'auth/user-not-found') throw err;
+    }
+
+    // Generate 6-digit OTP
+    const otp     = crypto.randomInt(100000, 999999).toString();
+    const otpHash = await bcrypt.hash(otp, 10);
+
+    // Save OTP to MongoDB (upsert — agar pehle se hai toh replace)
+    await Otp.findOneAndUpdate(
+      { email: email.toLowerCase().trim() },
+      {
+        otpHash,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+        attempts:  0,
+        verified:  false,
+        // Store registration data temporarily
+        _regData:  JSON.stringify({ name: name.trim(), password }),
+      },
+      { upsert: true, new: true }
+    );
+
+    // Send OTP email via Brevo
+    await sendOtpEmail(email.toLowerCase().trim(), name.trim(), otp);
+
+    return res.status(200).json({
+      success:  true,
+      message:  'Verification code sent.',
+      step:     'verify_otp',
+      email:    email.toLowerCase().trim(),
+    });
+  } catch (err) {
+    console.error('[Auth] register error:', err.message);
+    return res.status(500).json({ success: false, message: 'Registration failed. Try again.' });
+  }
+});
+
+// ─── REGISTER — Step 2: Verify OTP + create account ──────────────────────────
+// POST /api/auth/verify-otp
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp)
+      return res.status(400).json({ success: false, message: 'Email and code are required.' });
+
+    const record = await Otp.findOne({ email: email.toLowerCase().trim(), verified: false });
+
+    if (!record)
+      return res.status(400).json({ success: false, message: 'Code expired. Register again.' });
+
+    if (new Date() > record.expiresAt)
+      return res.status(400).json({ success: false, message: 'Code expired. Register again.' });
+
+    // Max 3 attempts
+    if (record.attempts >= 3) {
+      await Otp.deleteOne({ email: record.email });
+      return res.status(429).json({ success: false, message: 'Too many attempts. Register again.' });
+    }
+
+    const match = await bcrypt.compare(otp.trim(), record.otpHash);
+    if (!match) {
+      await Otp.updateOne({ _id: record._id }, { $inc: { attempts: 1 } });
+      const left = 3 - (record.attempts + 1);
+      return res.status(400).json({ success: false, message: `Invalid code. ${left} attempt${left === 1 ? '' : 's'} left.` });
+    }
+
+    // OTP correct — create Firebase + MongoDB account
+    const { name, password } = JSON.parse(record._regData);
+    const fingerprint = extractFingerprint(req);
+
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().createUser({
-        displayName: name.trim(),
+        displayName: name,
         email:       email.toLowerCase().trim(),
         password,
       });
@@ -74,38 +149,32 @@ router.post('/register', async (req, res) => {
       throw err;
     }
 
-    // Create user record in MongoDB
     await createUser({
       firebaseUid: firebaseUser.uid,
-      name:        name.trim(),
-      email:       email.toLowerCase().trim(),
-      plan:        'free',
+      name,
+      email: email.toLowerCase().trim(),
+      plan:  'free',
     });
 
-    // Tokens banao
     const payload      = { id: firebaseUser.uid, email: firebaseUser.email, plan: 'free' };
     const accessToken  = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
     await storeRefreshToken(refreshToken, firebaseUser.uid);
-
-    // Register device fingerprint
     await registerDevice(firebaseUser.uid, fingerprint);
+
+    // OTP record delete karo
+    await Otp.deleteOne({ _id: record._id });
 
     return res.status(201).json({
       success: true,
       message: 'Welcome to AdVault!',
       accessToken,
       refreshToken,
-      user: {
-        id:    firebaseUser.uid,
-        name:  name.trim(),
-        email: firebaseUser.email,
-        plan:  'free',
-      },
+      user: { id: firebaseUser.uid, name, email: firebaseUser.email, plan: 'free' },
     });
   } catch (err) {
-    console.error('[Auth] register error:', err.message);
-    return res.status(500).json({ success: false, message: 'Registration failed. Try again.' });
+    console.error('[Auth] verify-otp error:', err.message);
+    return res.status(500).json({ success: false, message: 'Verification failed. Try again.' });
   }
 });
 
@@ -121,11 +190,11 @@ router.post('/login', async (req, res) => {
     if (isTempEmail(email))
       return res.status(400).json({ success: false, message: 'Invalid email.' });
 
-    // Sign in via Firebase REST API
-    // FIREBASE_WEB_API_KEY used (not FIREBASE_API_KEY)
+    // Firebase REST API se sign-in karo (Admin SDK se password verify nahi hota)
+    // Fix: .env mein variable ka naam FIREBASE_WEB_API_KEY hai, FIREBASE_API_KEY nahi
     const FIREBASE_API_KEY = process.env.FIREBASE_WEB_API_KEY || process.env.FIREBASE_API_KEY;
     if (!FIREBASE_API_KEY)
-      return res.status(500).json({ success: false, message: 'Server configuration error.' });
+      return res.status(500).json({ success: false, message: 'Server config error: FIREBASE_WEB_API_KEY missing' });
 
     const fbRes = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
@@ -141,18 +210,18 @@ router.post('/login', async (req, res) => {
     if (!fbRes.ok) {
       const code = fbData?.error?.message || '';
       if (code.includes('EMAIL_NOT_FOUND') || code.includes('INVALID_PASSWORD') || code.includes('INVALID_LOGIN_CREDENTIALS'))
-        return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+        return res.status(401).json({ success: false, message: 'Email ya password galat hai' });
       if (code.includes('TOO_MANY_ATTEMPTS'))
-        return res.status(429).json({ success: false, message: 'Too many attempts. Try again later.' });
+        return res.status(429).json({ success: false, message: 'Bahut zyada login attempts. Thodi der baad try karo.' });
       throw new Error(code);
     }
 
-    // Fetch user data
+    // Firestore se user data fetch karo
     const uid  = fbData.localId;
     const user = await findUserById(uid);
 
     if (!user)
-      return res.status(404).json({ success: false, message: 'Account not found.' });
+      return res.status(404).json({ success: false, message: 'User record nahi mila. Support se contact karo.' });
 
     const payload      = { id: uid, email: user.email, plan: user.plan || 'free' };
     const accessToken  = generateAccessToken(payload);
@@ -164,7 +233,7 @@ router.post('/login', async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Signed in.',
+      message: 'Login ho gaye!',
       accessToken,
       refreshToken,
       user: {
@@ -176,7 +245,7 @@ router.post('/login', async (req, res) => {
     });
   } catch (err) {
     console.error('[Auth] login error:', err.message);
-    return res.status(500).json({ success: false, message: 'Login failed. Try again.' });
+    return res.status(500).json({ success: false, message: 'Login fail hua. Dobara try karo.' });
   }
 });
 
@@ -186,21 +255,21 @@ router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken)
-      return res.status(401).json({ success: false, message: 'Session expired.' });
+      return res.status(401).json({ success: false, message: 'Refresh token chahiye' });
 
     const decoded = verifyRefreshToken(refreshToken);
     if (!decoded?.id)
-      return res.status(401).json({ success: false, message: 'Session expired.' });
+      return res.status(401).json({ success: false, message: 'Refresh token invalid ya expire' });
 
     const stored = await getRefreshToken(refreshToken);
     if (!stored)
-      return res.status(401).json({ success: false, message: 'Session revoked. Sign in again.' });
+      return res.status(401).json({ success: false, message: 'Token revoke ho chuka hai. Dobara login karo.' });
 
     const newAccessToken = generateAccessToken({ id: decoded.id, email: decoded.email, plan: decoded.plan });
     return res.json({ success: true, accessToken: newAccessToken });
   } catch (err) {
     console.error('[Auth] refresh error:', err.message);
-    return res.status(401).json({ success: false, message: 'Session refresh failed.' });
+    return res.status(401).json({ success: false, message: 'Token refresh fail' });
   }
 });
 
@@ -211,10 +280,10 @@ router.post('/logout', protect, async (req, res) => {
     const { refreshToken } = req.body;
     if (refreshToken) await deleteRefreshToken(refreshToken);
     invalidateUserCache(req.user.id);
-    return res.json({ success: true, message: 'Signed out.' });
+    return res.json({ success: true, message: 'Logout ho gaye' });
   } catch (err) {
     console.error('[Auth] logout error:', err.message);
-    return res.status(500).json({ success: false, message: 'Sign out failed.' });
+    return res.status(500).json({ success: false, message: 'Logout fail' });
   }
 });
 
