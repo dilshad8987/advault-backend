@@ -29,18 +29,17 @@ const {
   detectVPN,
 } = require('../middleware/auth');
 const { extractFingerprint } = require('../middleware/botDetection');
-const bcrypt         = require('bcryptjs');
 const crypto         = require('crypto');
+const bcrypt         = require('bcryptjs');
 const Otp            = require('../models/Otp');
-const { sendOtpEmail } = require('../services/emailService');
+const { sendResetEmail } = require('../services/emailService');
 
-// ─── REGISTER — Step 1: Validate + send OTP ──────────────────────────────────
+// ─── REGISTER ─────────────────────────────────────────────────────────────────
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
-    // Validation
     if (!name || name.trim().length < 2)
       return res.status(400).json({ success: false, message: 'Name is too short.' });
     if (!email || !isValidEmail(email))
@@ -50,96 +49,19 @@ router.post('/register', async (req, res) => {
     if (!pwCheck.valid)
       return res.status(400).json({ success: false, message: pwCheck.message });
 
-    // VPN Check
     const vpnResult = detectVPN(req);
     if (vpnResult.detected)
       return res.status(403).json({ success: false, message: 'VPN/Proxy not allowed.' });
 
-    // Device multi-account check
     const fingerprint   = extractFingerprint(req);
     const existingAccts = await getAccountsByDevice(fingerprint);
     if (existingAccts.length >= 1)
       return res.status(403).json({ success: false, message: 'Account already exists on this device.' });
 
-    // Email already registered check
-    try {
-      await admin.auth().getUserByEmail(email.toLowerCase().trim());
-      return res.status(409).json({ success: false, message: 'Email already registered.' });
-    } catch (err) {
-      if (err.code !== 'auth/user-not-found') throw err;
-    }
-
-    // Generate 6-digit OTP
-    const otp     = crypto.randomInt(100000, 999999).toString();
-    const otpHash = await bcrypt.hash(otp, 10);
-
-    // Save OTP to MongoDB (upsert — agar pehle se hai toh replace)
-    await Otp.findOneAndUpdate(
-      { email: email.toLowerCase().trim() },
-      {
-        otpHash,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-        attempts:  0,
-        verified:  false,
-        // Store registration data temporarily
-        _regData:  JSON.stringify({ name: name.trim(), password }),
-      },
-      { upsert: true, new: true }
-    );
-
-    // Send OTP email via Brevo
-    await sendOtpEmail(email.toLowerCase().trim(), name.trim(), otp);
-
-    return res.status(200).json({
-      success:  true,
-      message:  'Verification code sent.',
-      step:     'verify_otp',
-      email:    email.toLowerCase().trim(),
-    });
-  } catch (err) {
-    console.error('[Auth] register error:', err.message);
-    return res.status(500).json({ success: false, message: 'Registration failed. Try again.' });
-  }
-});
-
-// ─── REGISTER — Step 2: Verify OTP + create account ──────────────────────────
-// POST /api/auth/verify-otp
-router.post('/verify-otp', async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-
-    if (!email || !otp)
-      return res.status(400).json({ success: false, message: 'Email and code are required.' });
-
-    const record = await Otp.findOne({ email: email.toLowerCase().trim(), verified: false });
-
-    if (!record)
-      return res.status(400).json({ success: false, message: 'Code expired. Register again.' });
-
-    if (new Date() > record.expiresAt)
-      return res.status(400).json({ success: false, message: 'Code expired. Register again.' });
-
-    // Max 3 attempts
-    if (record.attempts >= 3) {
-      await Otp.deleteOne({ email: record.email });
-      return res.status(429).json({ success: false, message: 'Too many attempts. Register again.' });
-    }
-
-    const match = await bcrypt.compare(otp.trim(), record.otpHash);
-    if (!match) {
-      await Otp.updateOne({ _id: record._id }, { $inc: { attempts: 1 } });
-      const left = 3 - (record.attempts + 1);
-      return res.status(400).json({ success: false, message: `Invalid code. ${left} attempt${left === 1 ? '' : 's'} left.` });
-    }
-
-    // OTP correct — create Firebase + MongoDB account
-    const { name, password } = JSON.parse(record._regData);
-    const fingerprint = extractFingerprint(req);
-
     let firebaseUser;
     try {
       firebaseUser = await admin.auth().createUser({
-        displayName: name,
+        displayName: name.trim(),
         email:       email.toLowerCase().trim(),
         password,
       });
@@ -151,9 +73,9 @@ router.post('/verify-otp', async (req, res) => {
 
     await createUser({
       firebaseUid: firebaseUser.uid,
-      name,
-      email: email.toLowerCase().trim(),
-      plan:  'free',
+      name:        name.trim(),
+      email:       email.toLowerCase().trim(),
+      plan:        'free',
     });
 
     const payload      = { id: firebaseUser.uid, email: firebaseUser.email, plan: 'free' };
@@ -162,19 +84,16 @@ router.post('/verify-otp', async (req, res) => {
     await storeRefreshToken(refreshToken, firebaseUser.uid);
     await registerDevice(firebaseUser.uid, fingerprint);
 
-    // OTP record delete karo
-    await Otp.deleteOne({ _id: record._id });
-
     return res.status(201).json({
       success: true,
       message: 'Welcome to AdVault!',
       accessToken,
       refreshToken,
-      user: { id: firebaseUser.uid, name, email: firebaseUser.email, plan: 'free' },
+      user: { id: firebaseUser.uid, name: name.trim(), email: firebaseUser.email, plan: 'free' },
     });
   } catch (err) {
-    console.error('[Auth] verify-otp error:', err.message);
-    return res.status(500).json({ success: false, message: 'Verification failed. Try again.' });
+    console.error('[Auth] register error:', err.message);
+    return res.status(500).json({ success: false, message: 'Registration failed. Try again.' });
   }
 });
 
@@ -288,3 +207,87 @@ router.post('/logout', protect, async (req, res) => {
 });
 
 module.exports = router;
+
+// ─── FORGOT PASSWORD ──────────────────────────────────────────────────────────
+// POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !isValidEmail(email))
+      return res.status(400).json({ success: false, message: 'Invalid email.' });
+
+    // Check user exists
+    const user = await findUserByEmail(email.toLowerCase().trim());
+    // Always return success — don't reveal if email exists
+    if (!user) return res.status(200).json({ success: true, message: 'If this email exists, a reset link has been sent.' });
+
+    // Generate secure token
+    const token     = crypto.randomBytes(32).toString('hex');
+    const tokenHash = await bcrypt.hash(token, 10);
+
+    // Save to DB — expires in 10 minutes
+    await Otp.findOneAndUpdate(
+      { email: email.toLowerCase().trim() },
+      {
+        otpHash:   tokenHash,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        attempts:  0,
+        verified:  false,
+        _regData:  'reset',
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${token}&email=${encodeURIComponent(email.toLowerCase().trim())}`;
+    await sendResetEmail(email.toLowerCase().trim(), user.name || 'User', resetLink);
+
+    return res.status(200).json({ success: true, message: 'If this email exists, a reset link has been sent.' });
+  } catch (err) {
+    console.error('[Auth] forgot-password error:', err.message);
+    return res.status(500).json({ success: false, message: 'Something went wrong. Try again.' });
+  }
+});
+
+// ─── RESET PASSWORD ───────────────────────────────────────────────────────────
+// POST /api/auth/reset-password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+    if (!email || !token || !newPassword)
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+
+    const pwCheck = validateStrongPassword(newPassword);
+    if (!pwCheck.valid)
+      return res.status(400).json({ success: false, message: pwCheck.message });
+
+    const record = await Otp.findOne({ email: email.toLowerCase().trim(), _regData: 'reset', verified: false });
+    if (!record) return res.status(400).json({ success: false, message: 'Reset link is invalid or expired.' });
+    if (new Date() > record.expiresAt) {
+      await Otp.deleteOne({ _id: record._id });
+      return res.status(400).json({ success: false, message: 'Reset link has expired. Request a new one.' });
+    }
+    if (record.attempts >= 3) {
+      await Otp.deleteOne({ _id: record._id });
+      return res.status(429).json({ success: false, message: 'Too many attempts. Request a new reset link.' });
+    }
+
+    const match = await bcrypt.compare(token, record.otpHash);
+    if (!match) {
+      await Otp.updateOne({ _id: record._id }, { $inc: { attempts: 1 } });
+      return res.status(400).json({ success: false, message: 'Reset link is invalid or expired.' });
+    }
+
+    // Update password in Firebase
+    const firebaseUser = await admin.auth().getUserByEmail(email.toLowerCase().trim());
+    await admin.auth().updateUser(firebaseUser.uid, { password: newPassword });
+
+    // Delete reset token
+    await Otp.deleteOne({ _id: record._id });
+
+    return res.status(200).json({ success: true, message: 'Password updated. You can now sign in.' });
+  } catch (err) {
+    console.error('[Auth] reset-password error:', err.message);
+    return res.status(500).json({ success: false, message: 'Something went wrong. Try again.' });
+  }
+});
+
