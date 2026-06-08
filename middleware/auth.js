@@ -6,6 +6,37 @@ const { verifyAccessToken } = require('../utils/jwt');
 const { findUserById, isDeviceAllowed, registerDevice } = require('../store/db');
 const { extractFingerprint } = require('./botDetection');
 
+// ─── Input Sanitization ────────────────────────────────────────────────────────
+// MongoDB operator injection se bachao: $gt, $ne, $where, dot-notation etc.
+// Legitimate users kabhi $ ya . field names nahi dalte.
+function sanitizeInput(value) {
+  if (typeof value === 'string') {
+    // Trim whitespace
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeInput);
+  }
+  if (value !== null && typeof value === 'object') {
+    const clean = {};
+    for (const key of Object.keys(value)) {
+      // Keys jo $ ya . se shuru hon — inject attempt, drop karo
+      if (key.startsWith('$') || key.includes('.')) continue;
+      clean[key] = sanitizeInput(value[key]);
+    }
+    return clean;
+  }
+  return value;
+}
+
+// Express middleware — req.body ko in-place sanitize karta hai
+function sanitizeBody(req, res, next) {
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitizeInput(req.body);
+  }
+  next();
+}
+
 // ─── In-Memory Cache ───────────────────────────────────────────────────────────
 const userCache   = new Map();
 const deviceCache = new Map();
@@ -146,4 +177,7 @@ module.exports = {
   isValidEmail,
   isTempEmail,
   detectVPN,
+  // Input sanitization
+  sanitizeInput,
+  sanitizeBody,
 };
