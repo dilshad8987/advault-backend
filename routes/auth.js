@@ -27,18 +27,20 @@ const {
   protect,
   invalidateUserCache,
   detectVPN,
+  sanitizeInput,
 } = require('../middleware/auth');
 const { extractFingerprint } = require('../middleware/botDetection');
 const crypto         = require('crypto');
 const bcrypt         = require('bcryptjs');
 const Otp            = require('../models/Otp');
-const { sendResetEmail } = require('../services/emailService');
+const { sendResetEmail, sendLoginAlertEmail } = require('../services/emailService');
 
 // ─── REGISTER ─────────────────────────────────────────────────────────────────
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const rawBody = sanitizeInput(req.body);
+    const { name, email, password } = rawBody;
 
     if (!name || name.trim().length < 2)
       return res.status(400).json({ success: false, message: 'Name is too short.' });
@@ -101,7 +103,8 @@ router.post('/register', async (req, res) => {
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const rawBody = sanitizeInput(req.body);
+    const { email, password } = rawBody;
 
     if (!email || !password)
       return res.status(400).json({ success: false, message: 'Email and password are required.' });
@@ -148,7 +151,25 @@ router.post('/login', async (req, res) => {
     await storeRefreshToken(refreshToken, uid);
 
     const fingerprint = extractFingerprint(req);
+
+    // ── New Device Detection ──────────────────────────────────────────────────
+    // Check karo kya yeh device pehle kabhi login ki hai
+    const { isDeviceAllowed } = require('../store/db');
+    const isKnownDevice = await isDeviceAllowed(uid, fingerprint);
+
     await registerDevice(uid, fingerprint);
+
+    // Naya device — suspicious login alert email bhejo
+    if (!isKnownDevice) {
+      const ua = req.headers['user-agent'] || 'Unknown browser';
+      const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
+      const loginTime = new Date().toUTCString();
+      // Fire-and-forget — login block mat karo alert ki wajah se
+      sendLoginAlertEmail(user.email, user.name || 'User', { ua, ip, loginTime }).catch(err =>
+        console.error('[Auth] login alert email failed:', err.message)
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     return res.json({
       success: true,
