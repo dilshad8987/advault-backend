@@ -32,6 +32,10 @@ app.use(cors({
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10kb' }));
+
+// MongoDB injection sanitization — har route pe automatically apply hoga
+const { sanitizeBody } = require('./middleware/auth');
+app.use(sanitizeBody);
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // ─── MongoDB + Midnight Reset ─────────────────────────────────────────────────
@@ -91,3 +95,4 @@ app.listen(PORT, () => {
   const { startCleanupScheduler } = require('./services/cleanupService');
   startCleanupScheduler();
 });
+      
