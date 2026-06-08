@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 
-const { protect } = require('../middleware/auth');
+const { protect, sanitizeInput } = require('../middleware/auth');
 const { findUserById, updateUser, getUserDevices, removeDevice, checkSearchLimit } = require('../store/db');
 const { getCacheStats } = require('../services/cache');
 
@@ -43,7 +43,7 @@ router.get('/profile', protect, async (req, res) => {
 // ================================
 router.put('/profile', protect, async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name } = sanitizeInput(req.body);
     if (!name || name.trim().length < 2)
       return res.status(400).json({ success: false, message: 'Invalid name.' });
 
