@@ -161,11 +161,25 @@ router.post('/login', async (req, res) => {
 
     // Naya device — suspicious login alert email bhejo
     if (!isKnownDevice) {
-      const ua = req.headers['user-agent'] || 'Unknown browser';
-      const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
-      const loginTime = new Date().toUTCString();
-      // Fire-and-forget — login block mat karo alert ki wajah se
-      sendLoginAlertEmail(user.email, user.name || 'User', { ua, ip, loginTime }).catch(err =>
+      const uaStr  = req.headers['user-agent'] || '';
+      const ip     = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
+      const time   = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) + ' IST';
+
+      // Simple UA parsing
+      const browser = uaStr.includes('Chrome') ? 'Chrome'
+                    : uaStr.includes('Firefox') ? 'Firefox'
+                    : uaStr.includes('Safari') ? 'Safari'
+                    : uaStr.includes('Edge') ? 'Edge'
+                    : 'Unknown Browser';
+      const os      = uaStr.includes('Windows') ? 'Windows'
+                    : uaStr.includes('Android') ? 'Android'
+                    : uaStr.includes('iPhone') || uaStr.includes('iPad') ? 'iOS'
+                    : uaStr.includes('Mac') ? 'macOS'
+                    : uaStr.includes('Linux') ? 'Linux'
+                    : 'Unknown OS';
+
+      // Fire-and-forget — login block nahi hoga alert ki wajah se
+      sendLoginAlertEmail(user.email, user.name || 'User', { time, browser, os, ip }).catch(err =>
         console.error('[Auth] login alert email failed:', err.message)
       );
     }
