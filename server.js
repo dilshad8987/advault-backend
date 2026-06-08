@@ -11,22 +11,21 @@ app.set('trust proxy', 1);
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'http://localhost:3000',
-  'http://localhost:5000',
+  'https://advault-frontend.vercel.app',  // Production
+  process.env.FRONTEND_URL,               // Railway env override
+  'http://localhost:3000',                // Local dev
 ].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow server-to-server requests (no origin)
     if (!origin) return callback(null, true);
-    const allowed =
-      allowedOrigins.includes(origin) ||
-      origin.endsWith('.vercel.app');
-    if (allowed) return callback(null, true);
-    return callback(new Error('CORS: origin allowed nahi hai — ' + origin));
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    console.warn('[CORS] Blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-ID'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-device-id'],
   credentials: true,
 }));
 
@@ -39,7 +38,7 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 async function connectMongoDB() {
   const uri = process.env.MONGODB_URI;
   if (!uri) {
-    console.warn('⚠️  MONGODB_URI set nahi hai — caching disabled');
+    console.warn('⚠️  MONGODB_URI not set — caching disabled');
     return;
   }
   try {
@@ -53,8 +52,8 @@ async function connectMongoDB() {
     startMidnightReset();
 
   } catch (err) {
-    console.error('❌ MongoDB connection fail:', err.message);
-    console.warn('   Caching disabled — direct API calls hongi');
+    console.error('❌ MongoDB connection failed:', err.message);
+    console.warn('   Caching disabled — direct API calls will be made');
   }
 }
 connectMongoDB();
@@ -73,7 +72,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.use('*', (req, res) => res.status(404).json({ success: false, message: 'Route nahi mili' }));
+app.use('*', (req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
 
 app.use((err, req, res, next) => {
   console.error('Server Error:', err.message);
@@ -85,8 +84,8 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log('\n✅ AdVault Backend chal raha hai port ' + PORT + ' pe');
-  console.log('🔗 Health check: http://localhost:' + PORT + '/health\n');
+  console.log('\n✅ AdVault Backend running on port ' + PORT + ' pe');
+  console.log('🔗 Health: http://localhost:' + PORT + '/health\n');
 
   // Cleanup scheduler — roz raat 12 baje
   const { startCleanupScheduler } = require('./services/cleanupService');
