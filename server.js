@@ -11,9 +11,9 @@ app.set('trust proxy', 1);
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
-  'https://advault-frontend.vercel.app',  // Production
-  process.env.FRONTEND_URL,               // Railway env override
-  'http://localhost:3000',                // Local dev
+  'https://advault.in',                   // Apex domain
+  process.env.FRONTEND_URL,               // www.advault.in (Railway env)
+  'https://advault-frontend.vercel.app',  // Vercel fallback
 ].filter(Boolean);
 
 app.use(cors({
