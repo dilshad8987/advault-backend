@@ -241,6 +241,64 @@ router.post('/logout', protect, async (req, res) => {
   }
 });
 
+// ─── GOOGLE LOGIN ─────────────────────────────────────────────────────────────
+// POST /api/auth/google
+router.post('/google', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken)
+      return res.status(400).json({ success: false, message: 'idToken required.' });
+
+    // Firebase Admin SDK se verify karo
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const { uid, email, name: googleName, picture } = decoded;
+
+    if (!email)
+      return res.status(400).json({ success: false, message: 'Google account mein email nahi mili.' });
+
+    // User exists? Warna create karo
+    let user = await findUserById(uid);
+
+    if (!user) {
+      await createUser({
+        firebaseUid: uid,
+        name:        googleName || email.split('@')[0],
+        email:       email.toLowerCase(),
+        plan:        'free',
+        provider:    'google',
+        photoURL:    picture || null,
+      });
+      user = await findUserById(uid);
+    }
+
+    const payload      = { id: uid, email: user.email, plan: user.plan || 'free' };
+    const accessToken  = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken(payload);
+    await storeRefreshToken(refreshToken, uid);
+
+    const fingerprint = extractFingerprint(req);
+    await registerDevice(uid, fingerprint);
+
+    return res.json({
+      success: true,
+      message: 'Google login successful!',
+      accessToken,
+      refreshToken,
+      user: {
+        id:    uid,
+        name:  user.name,
+        email: user.email,
+        plan:  user.plan || 'free',
+      },
+    });
+  } catch (err) {
+    console.error('[Auth] google login error:', err.message);
+    if (err.code === 'auth/id-token-expired')
+      return res.status(401).json({ success: false, message: 'Google token expired. Dobara try karo.' });
+    return res.status(500).json({ success: false, message: 'Google login fail hua.' });
+  }
+});
+
 module.exports = router;
 
 // ─── FORGOT PASSWORD ──────────────────────────────────────────────────────────
