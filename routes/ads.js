@@ -908,11 +908,6 @@ router.get('/meta/brand/:brandName', protect, async (req, res) => {
   }
 });
 
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
 // ─── Search ───────────────────────────────────────────────────────────────────
 router.get('/search', protect, searchLimiter, async (req, res) => {
   try {
