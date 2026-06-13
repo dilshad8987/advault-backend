@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 
 const { protect }       = require('../middleware/auth');
 const { searchLimiter } = require('../middleware/rateLimiter');
-const { checkCredits, deductCredits, checkSearchLimit, incrementSearchCount, updateUser, findUserById } = require('../store/db');
+const { checkCredits, deductCredits, checkSearchLimit, incrementSearchCount, updateUser, findUserById, CREDIT_COSTS } = require('../store/db');
 
 
 // ─── TikTok RapidAPI Client (inline) ─────────────────────────────────────────
@@ -1111,6 +1111,41 @@ router.get('/debug-api', async (req, res) => {
     });
   } catch (err) {
     res.json({ status: 'error', message: err.message });
+  }
+});
+
+// ─── Load More ────────────────────────────────────────────────────────────────
+// POST /api/ads/load-more
+// Frontend "Load More" button pe call hoga — credit deduct hoga
+router.post('/load-more', protect, async (req, res) => {
+  try {
+    const creditCheck = checkCredits(req.user, 'load_more');
+    if (!creditCheck.allowed)
+      return res.status(429).json({
+        success:          false,
+        message:          'Credits khatam ho gaye.',
+        creditsRemaining: 0,
+        upgrade:          true,
+      });
+
+    const deducted = await deductCredits(req.user.id, 'load_more');
+    if (!deducted.success)
+      return res.status(429).json({
+        success:          false,
+        message:          'Credits khatam ho gaye.',
+        creditsRemaining: deducted.remaining ?? 0,
+        upgrade:          true,
+      });
+
+    return res.json({
+      success:          true,
+      creditsRemaining: deducted.remaining,
+      creditsUsed:      CREDIT_COSTS.load_more,
+      nextResetDate:    deducted.nextResetDate || null,
+    });
+  } catch (err) {
+    console.error('[Ads] load-more error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
