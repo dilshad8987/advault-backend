@@ -40,7 +40,7 @@ function sanitizeBody(req, res, next) {
 // ─── In-Memory Cache ───────────────────────────────────────────────────────────
 const userCache   = new Map();
 const deviceCache = new Map();
-const USER_TTL    = 5  * 60 * 1000;
+const USER_TTL    = 60 * 1000;   // 1 min — credits live rehni chahiye
 const DEVICE_TTL  = 10 * 60 * 1000;
 
 function getCached(cache, key, ttl) {
