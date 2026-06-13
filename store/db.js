@@ -49,7 +49,16 @@ async function findUserByEmail(email) {
 async function createUser({ firebaseUid, name, email, plan = 'free' }) {
   try {
     if (!isMongoReady()) throw new Error('MongoDB connected nahi hai');
-    const user = await User.create({ firebaseUid, name, email, plan });
+    const planLimit = getPlanCredits(plan);
+    const user = await User.create({
+      firebaseUid,
+      name,
+      email,
+      plan,
+      credits:          planLimit,
+      creditsUsed:      0,
+      creditsResetDate: getNextResetDate(), // Aaj se 28 din baad
+    });
     return user.toObject();
   } catch (err) {
     console.error('[DB] createUser error:', err.message);
@@ -221,13 +230,22 @@ async function getAccountsByDevice(fingerprint) {
 
 // ─── Credit System Helpers ────────────────────────────────────────────────────
 
-// Current month string: "June 2026"
-function getCurrentMonth() {
-  const d = new Date();
-  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+const RESET_DAYS = 28; // Har 28 din mein credits reset
+
+// Reset date: registration ke baad exactly 28 din — ISO date string "YYYY-MM-DD"
+function getNextResetDate(fromDate = new Date()) {
+  const d = new Date(fromDate);
+  d.setDate(d.getDate() + RESET_DAYS);
+  return d.toISOString().slice(0, 10); // "2026-07-11"
 }
 
-// Get plan's monthly credit allocation
+// Check karo kya reset due hai (date compare)
+function isResetDue(creditsResetDate) {
+  if (!creditsResetDate) return true;
+  return new Date() >= new Date(creditsResetDate);
+}
+
+// Get plan's credit allocation
 function getPlanCredits(plan) {
   return PLAN_CREDITS[plan] || PLAN_CREDITS.free;
 }
@@ -235,21 +253,21 @@ function getPlanCredits(plan) {
 // Check if user has enough credits for an action
 function checkCredits(user, action = 'search') {
   const cost        = CREDIT_COSTS[action] || 1;
-  const thisMonth   = getCurrentMonth();
-  const resetNeeded = user.creditsResetDate !== thisMonth;
+  const resetNeeded = isResetDue(user.creditsResetDate);
 
-  // If reset needed, treat as full credits
+  // Reset due ho to full credits treat karo
   const remaining = resetNeeded
     ? getPlanCredits(user.plan)
     : Math.max(0, user.credits ?? getPlanCredits(user.plan));
 
   return {
-    allowed:   remaining >= cost,
+    allowed:         remaining >= cost,
     remaining,
     cost,
-    limit:     getPlanCredits(user.plan),
-    used:      resetNeeded ? 0 : (user.creditsUsed || 0),
+    limit:           getPlanCredits(user.plan),
+    used:            resetNeeded ? 0 : (user.creditsUsed || 0),
     resetNeeded,
+    nextResetDate:   user.creditsResetDate || null,
   };
 }
 
@@ -257,19 +275,21 @@ function checkCredits(user, action = 'search') {
 async function deductCredits(userId, action = 'search') {
   try {
     if (!isMongoReady()) return { success: false };
-    const cost      = CREDIT_COSTS[action] || 1;
-    const thisMonth = getCurrentMonth();
+    const cost = CREDIT_COSTS[action] || 1;
 
-    // First sync if needed (new month reset)
+    // Pehle sync karo agar reset due hai
     await syncCreditsIfNeeded(userId);
 
-    // Atomic deduction — only succeeds if credits >= cost
-    // This prevents any race condition or manipulation
+    // Fetch fresh reset date after sync
+    const fresh = await User.findOne({ firebaseUid: userId }, { creditsResetDate: 1 }).lean();
+    const resetDate = fresh?.creditsResetDate;
+
+    // Atomic deduction — only if credits >= cost AND resetDate matches
     const result = await User.findOneAndUpdate(
       {
         firebaseUid:      userId,
-        creditsResetDate: thisMonth,
-        credits:          { $gte: cost },  // atomic check: enough credits?
+        creditsResetDate: resetDate,
+        credits:          { $gte: cost },
       },
       {
         $inc: { credits: -cost, creditsUsed: cost },
@@ -279,32 +299,38 @@ async function deductCredits(userId, action = 'search') {
     );
 
     if (!result) {
-      // Either credits < cost OR reset didn't match — re-fetch to return real remaining
-      const user = await User.findOne({ firebaseUid: userId }, { credits: 1 }).lean();
+      const user      = await User.findOne({ firebaseUid: userId }, { credits: 1 }).lean();
       const remaining = user?.credits ?? 0;
       return { success: false, remaining, insufficient: true };
     }
 
-    return { success: true, remaining: result.credits, used: result.creditsUsed };
+    return {
+      success:       true,
+      remaining:     result.credits,
+      used:          result.creditsUsed,
+      nextResetDate: result.creditsResetDate,
+    };
   } catch (err) {
     console.error('[DB] deductCredits error:', err.message);
     return { success: false };
   }
 }
 
-// Sync user's credits if month has reset (call on login/profile load)
+// Sync: agar 28 din guzar gaye to credits reset karo
 async function syncCreditsIfNeeded(userId) {
   try {
     if (!isMongoReady()) return;
-    const thisMonth = getCurrentMonth();
-    const user      = await User.findOne({ firebaseUid: userId });
-    if (!user || user.creditsResetDate === thisMonth) return;
+    const user = await User.findOne({ firebaseUid: userId });
+    if (!user) return;
+
+    if (!isResetDue(user.creditsResetDate)) return; // Reset nahi chahiye
 
     const planLimit = getPlanCredits(user.plan);
     user.credits          = planLimit;
     user.creditsUsed      = 0;
-    user.creditsResetDate = thisMonth;
+    user.creditsResetDate = getNextResetDate(); // Aaj se agla 28 din
     await user.save();
+    console.log(`[Credits] Reset: ${userId} → ${planLimit} credits, next: ${user.creditsResetDate}`);
   } catch (err) {
     console.error('[DB] syncCreditsIfNeeded error:', err.message);
   }
@@ -350,4 +376,8 @@ module.exports = {
   // Legacy aliases (backward compat)
   checkSearchLimit,
   incrementSearchCount,
+
+  // Helpers
+  getNextResetDate,
+  RESET_DAYS,
 };
