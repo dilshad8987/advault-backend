@@ -60,8 +60,8 @@ router.post('/register', async (req, res) => {
 
     const fingerprint   = extractFingerprint(req);
     const existingAccts = await getAccountsByDevice(fingerprint);
-    if (existingAccts.length >= 1)
-      return res.status(403).json({ success: false, message: 'Account already exists on this device.' });
+    if (existingAccts.length >= 3)
+      return res.status(403).json({ success: false, message: 'Max accounts reached on this device.' });
 
     let firebaseUser;
     try {
@@ -308,8 +308,6 @@ router.post('/google', async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // ─── FORGOT PASSWORD ──────────────────────────────────────────────────────────
 // POST /api/auth/forgot-password
 router.post('/forgot-password', async (req, res) => {
@@ -393,5 +391,4 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-
-  
+module.exports = router;
