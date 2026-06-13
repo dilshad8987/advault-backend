@@ -259,26 +259,33 @@ async function deductCredits(userId, action = 'search') {
     if (!isMongoReady()) return { success: false };
     const cost      = CREDIT_COSTS[action] || 1;
     const thisMonth = getCurrentMonth();
-    const user      = await User.findOne({ firebaseUid: userId });
-    if (!user) return { success: false };
 
-    const resetNeeded = user.creditsResetDate !== thisMonth;
-    const planLimit   = getPlanCredits(user.plan);
+    // First sync if needed (new month reset)
+    await syncCreditsIfNeeded(userId);
 
-    if (resetNeeded) {
-      // Fresh month — reset credits, then deduct
-      user.credits          = Math.max(0, planLimit - cost);
-      user.creditsUsed      = cost;
-      user.creditsResetDate = thisMonth;
-    } else {
-      const current = user.credits ?? planLimit;
-      if (current < cost) return { success: false, remaining: current };
-      user.credits     = Math.max(0, current - cost);
-      user.creditsUsed = (user.creditsUsed || 0) + cost;
+    // Atomic deduction — only succeeds if credits >= cost
+    // This prevents any race condition or manipulation
+    const result = await User.findOneAndUpdate(
+      {
+        firebaseUid:      userId,
+        creditsResetDate: thisMonth,
+        credits:          { $gte: cost },  // atomic check: enough credits?
+      },
+      {
+        $inc: { credits: -cost, creditsUsed: cost },
+        $set: { updatedAt: new Date() },
+      },
+      { new: true }
+    );
+
+    if (!result) {
+      // Either credits < cost OR reset didn't match — re-fetch to return real remaining
+      const user = await User.findOne({ firebaseUid: userId }, { credits: 1 }).lean();
+      const remaining = user?.credits ?? 0;
+      return { success: false, remaining, insufficient: true };
     }
 
-    await user.save();
-    return { success: true, remaining: user.credits, used: user.creditsUsed };
+    return { success: true, remaining: result.credits, used: result.creditsUsed };
   } catch (err) {
     console.error('[DB] deductCredits error:', err.message);
     return { success: false };
