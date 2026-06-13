@@ -15,7 +15,7 @@ const CREDIT_COSTS = {
   ad_detail:       30,
   save_ad:         10,
   video_download:  10,
-  load_more:       10,
+  load_more:        5,
 };
 
 function isMongoReady() {
