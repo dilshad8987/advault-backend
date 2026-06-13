@@ -15,9 +15,14 @@ const userSchema = new mongoose.Schema({
   firebaseUid: { type: String, required: true, unique: true, index: true },
   name:        { type: String, required: true, trim: true },
   email:       { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
-  plan:        { type: String, enum: ['free', 'pro', 'agency'], default: 'free' },
+  plan:        { type: String, enum: ['free', 'pro', 'elite'], default: 'free' },
 
-  // Search tracking — har roz reset hoti hai
+  // Credit system — monthly reset
+  credits:          { type: Number, default: 200 },   // remaining credits
+  creditsUsed:      { type: Number, default: 0 },      // used this month
+  creditsResetDate: { type: String, default: '' },     // "Month YYYY" format
+
+  // Legacy — backward compat (unused, do not remove yet)
   searchCount:     { type: Number, default: 0 },
   searchResetDate: { type: String, default: '' },
 
