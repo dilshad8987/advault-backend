@@ -21,6 +21,7 @@ const {
   getAccountsByDevice,
   syncCreditsIfNeeded,
   getPlanCredits,
+  getNextResetDate,
 } = require('../store/db');
 const {
   validateStrongPassword,
