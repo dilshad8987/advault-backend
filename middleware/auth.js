@@ -146,6 +146,7 @@ async function protect(req, res, next) {
     }
 
     req.user        = user;
+    req.user.id     = user.firebaseUid;  // lean() pe .id virtual nahi hota
     req.fingerprint = fingerprint;
     next();
   } catch (err) {
