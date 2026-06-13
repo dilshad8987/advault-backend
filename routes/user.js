@@ -11,13 +11,13 @@ const { getCacheStats } = require('../services/cache');
 // ================================
 router.get('/profile', protect, async (req, res) => {
   try {
-    const user = await findUserById(req.user.id);
+    const user = await findUserById(req.user.firebaseUid);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
     // Sync credits if new month
     await syncCreditsIfNeeded(user.firebaseUid);
     // Reload after potential sync
-    const freshUser = await findUserById(req.user.id);
+    const freshUser = await findUserById(req.user.firebaseUid);
 
     const planLimit      = getPlanCredits(freshUser.plan);
     const creditsUsed    = freshUser.creditsUsed || 0;
@@ -58,7 +58,7 @@ router.put('/profile', protect, async (req, res) => {
     if (!name || name.trim().length < 2)
       return res.status(400).json({ success: false, message: 'Invalid name.' });
 
-    await updateUser(req.user.id, { name: name.trim() });
+    await updateUser(req.user.firebaseUid, { name: name.trim() });
     res.json({ success: true, message: 'Profile updated.' });
   } catch (err) {
     console.error('[User] update profile error:', err.message);
@@ -72,7 +72,7 @@ router.put('/profile', protect, async (req, res) => {
 // ================================
 router.get('/devices', protect, async (req, res) => {
   try {
-    const devices = await getUserDevices(req.user.id);
+    const devices = await getUserDevices(req.user.firebaseUid);
     res.json({
       success: true,
       devices: devices.map((d, i) => ({
@@ -93,7 +93,7 @@ router.get('/devices', protect, async (req, res) => {
 // ================================
 router.delete('/devices/:deviceId', protect, async (req, res) => {
   try {
-    await removeDevice(req.user.id, req.params.deviceId);
+    await removeDevice(req.user.firebaseUid, req.params.deviceId);
     res.json({ success: true, message: 'Device removed.' });
   } catch (err) {
     console.error('[User] remove device error:', err.message);
