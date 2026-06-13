@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 
 const { protect }       = require('../middleware/auth');
 const { searchLimiter } = require('../middleware/rateLimiter');
-const { checkSearchLimit, incrementSearchCount, updateUser, findUserById } = require('../store/db');
+const { checkCredits, deductCredits, checkSearchLimit, incrementSearchCount, updateUser, findUserById } = require('../store/db');
 
 
 // ─── TikTok RapidAPI Client (inline) ─────────────────────────────────────────
@@ -176,6 +176,19 @@ router.get('/video/stream', async (req, res) => {
 router.get('/video/download', protect, async (req, res) => {
   const { url, filename = 'ad-video.mp4' } = req.query;
   if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  // Credit check
+  const creditCheck = checkCredits(req.user, 'video_download');
+  if (!creditCheck.allowed)
+    return res.status(429).json({
+      success:  false,
+      message:  'Credits khatam ho gaye.',
+      creditsRemaining: 0,
+      upgrade:  true,
+    });
+
+  // Deduct before streaming
+  deductCredits(req.user.id, 'video_download').catch(() => {});
 
   try {
     const videoRes = await axios.get(decodeURIComponent(url), {
@@ -500,11 +513,24 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Database connected nahi hai' });
     }
+
+    // Credit check
+    const creditCheck = checkCredits(req.user, 'ad_detail');
+    if (!creditCheck.allowed)
+      return res.status(429).json({
+        success:  false,
+        message:  'Credits khatam ho gaye.',
+        creditsRemaining: 0,
+        upgrade:  true,
+      });
+
     const ad = await TikTokAd.findOne({ ad_id: req.params.adId }).lean();
     if (!ad) {
       return res.status(404).json({ success: false, message: 'Ad nahi mili' });
     }
-    // View count increment (background)
+
+    // Deduct credits + increment view count (background)
+    deductCredits(req.user.id, 'ad_detail').catch(() => {});
     TikTokAd.updateOne(
       { ad_id: req.params.adId },
       { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
@@ -914,9 +940,14 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
     const { keyword = '', platform = 'tiktok', country = 'US' } = req.query;
     if (!keyword.trim()) return res.status(400).json({ success: false, message: 'Keyword daalo' });
 
-    const limitCheck = checkSearchLimit(req.user);
-    if (!limitCheck.allowed)
-      return res.status(429).json({ success: false, message: 'Daily limit khatam.', upgrade: req.user.plan === 'free' });
+    const creditCheck = checkCredits(req.user, 'search');
+    if (!creditCheck.allowed)
+      return res.status(429).json({
+        success:  false,
+        message:  'Credits khatam ho gaye.',
+        creditsRemaining: 0,
+        upgrade:  true,
+      });
 
     let results = [];
     if (platform === 'tiktok' || platform === 'all') {
@@ -927,8 +958,16 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
       } catch (e) { console.error('TikTok search error:', e.message); }
     }
 
-    await incrementSearchCount(req.user.id);
-    res.json({ success: true, keyword, platform, total: results.length, remaining: limitCheck.remaining - 1, data: results });
+    const deducted = await deductCredits(req.user.id, 'search');
+    res.json({
+      success:          true,
+      keyword,
+      platform,
+      total:            results.length,
+      creditsRemaining: deducted.remaining ?? (creditCheck.remaining - creditCheck.cost),
+      creditsUsed:      creditCheck.cost,
+      data:             results,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -940,10 +979,18 @@ router.post('/save', protect, async (req, res) => {
     const { adId, adData, folderName = 'Default' } = req.body;
     if (!adId) return res.status(400).json({ success: false, message: 'Ad ID zaroori hai' });
 
+    // Credit check
+    const creditCheck = checkCredits(req.user, 'save_ad');
+    if (!creditCheck.allowed)
+      return res.status(429).json({
+        success:  false,
+        message:  'Credits khatam ho gaye.',
+        creditsRemaining: 0,
+        upgrade:  true,
+      });
+
     const user = await findUserById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
-    if (user.plan === 'free' && (user.savedAds || []).length >= 50)
-      return res.status(403).json({ success: false, message: 'Free plan mein sirf 50 ads.', upgrade: true });
 
     const savedAds = user.savedAds || [];
     if (savedAds.some(a => a.id === adId))
@@ -951,6 +998,7 @@ router.post('/save', protect, async (req, res) => {
 
     savedAds.push({ id: adId, folder: folderName, savedAt: new Date().toISOString(), ...adData });
     await updateUser(req.user.id, { savedAds });
+    deductCredits(req.user.id, 'save_ad').catch(() => {});
     res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: savedAds.length });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
