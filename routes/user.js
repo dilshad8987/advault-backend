@@ -36,7 +36,8 @@ router.get('/profile', protect, async (req, res) => {
         creditsUsed,
         creditsRemaining: creditsLeft,
         creditsLimit:     planLimit,
-        creditsResetDate: freshUser.creditsResetDate,
+        nextResetDate:    freshUser.creditsResetDate || null,   // ISO "YYYY-MM-DD"
+        creditsResetDate: freshUser.creditsResetDate || null,   // backward compat
         savedAds:         freshUser.savedAds?.length || 0,
         creditCosts:      CREDIT_COSTS,
       },
