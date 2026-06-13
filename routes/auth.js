@@ -19,6 +19,8 @@ const {
   deleteRefreshToken,
   registerDevice,
   getAccountsByDevice,
+  syncCreditsIfNeeded,
+  getPlanCredits,
 } = require('../store/db');
 const {
   validateStrongPassword,
@@ -185,6 +187,9 @@ router.post('/login', async (req, res) => {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    await syncCreditsIfNeeded(uid);
+    const freshUser = await findUserById(uid);
+
     return res.json({
       success: true,
       message: 'Login ho gaye!',
@@ -192,9 +197,9 @@ router.post('/login', async (req, res) => {
       refreshToken,
       user: {
         id:    uid,
-        name:  user.name,
-        email: user.email,
-        plan:  user.plan || 'free',
+        name:  freshUser.name,
+        email: freshUser.email,
+        plan:  freshUser.plan || 'free',
       },
     });
   } catch (err) {
@@ -279,6 +284,9 @@ router.post('/google', async (req, res) => {
     const fingerprint = extractFingerprint(req);
     await registerDevice(uid, fingerprint);
 
+    await syncCreditsIfNeeded(uid);
+    const freshGUser = await findUserById(uid);
+
     return res.json({
       success: true,
       message: 'Google login successful!',
@@ -286,9 +294,9 @@ router.post('/google', async (req, res) => {
       refreshToken,
       user: {
         id:    uid,
-        name:  user.name,
-        email: user.email,
-        plan:  user.plan || 'free',
+        name:  freshGUser.name,
+        email: freshGUser.email,
+        plan:  freshGUser.plan || 'free',
       },
     });
   } catch (err) {
@@ -384,3 +392,4 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+        
