@@ -1,10 +1,22 @@
 const mongoose = require('mongoose');
 const User     = require('../models/User');
 
-const REFRESH_TTL_MS     = 7 * 24 * 60 * 60 * 1000; // 7 din
-const FREE_DAILY_LIMIT   = 10;
-const PRO_DAILY_LIMIT    = 100;
-const AGENCY_DAILY_LIMIT = 500;
+const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 din
+
+// ─── Credit System Constants ──────────────────────────────────────────────────
+const PLAN_CREDITS = {
+  free:  200,
+  pro:   2000,
+  elite: 10000,
+};
+
+const CREDIT_COSTS = {
+  search:          5,
+  ad_detail:       10,
+  save_ad:         5,
+  video_download:  5,
+  load_more:       5,
+};
 
 function isMongoReady() {
   return mongoose.connection.readyState === 1;
@@ -207,36 +219,96 @@ async function getAccountsByDevice(fingerprint) {
 }
 
 
-// ─── Search Count Helpers ──────────────────────────────────────────────────────
+// ─── Credit System Helpers ────────────────────────────────────────────────────
 
-function getPlanLimit(plan) {
-  if (plan === 'agency') return AGENCY_DAILY_LIMIT;
-  if (plan === 'pro')    return PRO_DAILY_LIMIT;
-  return FREE_DAILY_LIMIT;
+// Current month string: "June 2026"
+function getCurrentMonth() {
+  const d = new Date();
+  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
 
-function checkSearchLimit(user) {
-  const today       = new Date().toDateString();
-  const resetNeeded = user.searchResetDate !== today;
-  const count       = resetNeeded ? 0 : (user.searchCount || 0);
-  const limit       = getPlanLimit(user.plan);
-  const remaining   = Math.max(0, limit - count);
-  return { allowed: remaining > 0, remaining, limit, resetNeeded };
+// Get plan's monthly credit allocation
+function getPlanCredits(plan) {
+  return PLAN_CREDITS[plan] || PLAN_CREDITS.free;
 }
 
-async function incrementSearchCount(userId) {
+// Check if user has enough credits for an action
+function checkCredits(user, action = 'search') {
+  const cost        = CREDIT_COSTS[action] || 1;
+  const thisMonth   = getCurrentMonth();
+  const resetNeeded = user.creditsResetDate !== thisMonth;
+
+  // If reset needed, treat as full credits
+  const remaining = resetNeeded
+    ? getPlanCredits(user.plan)
+    : Math.max(0, user.credits ?? getPlanCredits(user.plan));
+
+  return {
+    allowed:   remaining >= cost,
+    remaining,
+    cost,
+    limit:     getPlanCredits(user.plan),
+    used:      resetNeeded ? 0 : (user.creditsUsed || 0),
+    resetNeeded,
+  };
+}
+
+// Deduct credits for an action — returns { success, remaining, used }
+async function deductCredits(userId, action = 'search') {
+  try {
+    if (!isMongoReady()) return { success: false };
+    const cost      = CREDIT_COSTS[action] || 1;
+    const thisMonth = getCurrentMonth();
+    const user      = await User.findOne({ firebaseUid: userId });
+    if (!user) return { success: false };
+
+    const resetNeeded = user.creditsResetDate !== thisMonth;
+    const planLimit   = getPlanCredits(user.plan);
+
+    if (resetNeeded) {
+      // Fresh month — reset credits, then deduct
+      user.credits          = Math.max(0, planLimit - cost);
+      user.creditsUsed      = cost;
+      user.creditsResetDate = thisMonth;
+    } else {
+      const current = user.credits ?? planLimit;
+      if (current < cost) return { success: false, remaining: current };
+      user.credits     = Math.max(0, current - cost);
+      user.creditsUsed = (user.creditsUsed || 0) + cost;
+    }
+
+    await user.save();
+    return { success: true, remaining: user.credits, used: user.creditsUsed };
+  } catch (err) {
+    console.error('[DB] deductCredits error:', err.message);
+    return { success: false };
+  }
+}
+
+// Sync user's credits if month has reset (call on login/profile load)
+async function syncCreditsIfNeeded(userId) {
   try {
     if (!isMongoReady()) return;
-    const today = new Date().toDateString();
-    const user  = await User.findOne({ firebaseUid: userId });
-    if (!user) return;
-    const resetNeeded    = user.searchResetDate !== today;
-    user.searchCount     = resetNeeded ? 1 : (user.searchCount || 0) + 1;
-    user.searchResetDate = today;
+    const thisMonth = getCurrentMonth();
+    const user      = await User.findOne({ firebaseUid: userId });
+    if (!user || user.creditsResetDate === thisMonth) return;
+
+    const planLimit = getPlanCredits(user.plan);
+    user.credits          = planLimit;
+    user.creditsUsed      = 0;
+    user.creditsResetDate = thisMonth;
     await user.save();
   } catch (err) {
-    console.error('[DB] incrementSearchCount error:', err.message);
+    console.error('[DB] syncCreditsIfNeeded error:', err.message);
   }
+}
+
+// Legacy — kept for backward compat, routes will be updated to use credits
+function checkSearchLimit(user) {
+  return checkCredits(user, 'search');
+}
+async function incrementSearchCount(userId) {
+  await deductCredits(userId, 'search');
 }
 
 module.exports = {
@@ -260,7 +332,15 @@ module.exports = {
   getUserDeviceCount: getDeviceCount,
   getAccountsByDevice, // alias — backward compat
 
-  // Search
+  // Credit System
+  checkCredits,
+  deductCredits,
+  syncCreditsIfNeeded,
+  getPlanCredits,
+  CREDIT_COSTS,
+  PLAN_CREDITS,
+
+  // Legacy aliases (backward compat)
   checkSearchLimit,
   incrementSearchCount,
 };
