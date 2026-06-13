@@ -11,11 +11,11 @@ const PLAN_CREDITS = {
 };
 
 const CREDIT_COSTS = {
-  search:          5,
-  ad_detail:       10,
-  save_ad:         5,
-  video_download:  5,
-  load_more:       5,
+  search:          10,
+  ad_detail:       30,
+  save_ad:         10,
+  video_download:  10,
+  load_more:       10,
 };
 
 function isMongoReady() {
