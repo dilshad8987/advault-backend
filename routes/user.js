@@ -2,7 +2,7 @@ const express = require('express');
 const router  = express.Router();
 
 const { protect, sanitizeInput } = require('../middleware/auth');
-const { findUserById, updateUser, getUserDevices, removeDevice, checkSearchLimit } = require('../store/db');
+const { findUserById, updateUser, getUserDevices, removeDevice, checkCredits, syncCreditsIfNeeded, getPlanCredits, PLAN_CREDITS, CREDIT_COSTS } = require('../store/db');
 const { getCacheStats } = require('../services/cache');
 
 // ================================
@@ -14,21 +14,31 @@ router.get('/profile', protect, async (req, res) => {
     const user = await findUserById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
-    const limitInfo = checkSearchLimit(user);
+    // Sync credits if new month
+    await syncCreditsIfNeeded(user.firebaseUid);
+    // Reload after potential sync
+    const freshUser = await findUserById(req.user.id);
+
+    const planLimit      = getPlanCredits(freshUser.plan);
+    const creditsUsed    = freshUser.creditsUsed || 0;
+    const creditsLeft    = freshUser.credits ?? planLimit;
+
     res.json({
       success: true,
       user: {
-        id:        user.id,
-        name:      user.name,
-        email:     user.email,
-        plan:      user.plan,
-        createdAt: user.createdAt,
+        id:        freshUser.id,
+        name:      freshUser.name,
+        email:     freshUser.email,
+        plan:      freshUser.plan,
+        createdAt: freshUser.createdAt,
       },
       usage: {
-        searchesUsed:      user.searchCount || 0,
-        searchLimit:       limitInfo.limit,
-        searchesRemaining: limitInfo.remaining,
-        savedAds:          user.savedAds?.length || 0,
+        creditsUsed,
+        creditsRemaining: creditsLeft,
+        creditsLimit:     planLimit,
+        creditsResetDate: freshUser.creditsResetDate,
+        savedAds:         freshUser.savedAds?.length || 0,
+        creditCosts:      CREDIT_COSTS,
       },
     });
   } catch (err) {
@@ -96,9 +106,9 @@ router.delete('/devices/:deviceId', protect, async (req, res) => {
 // ================================
 router.get('/plan', protect, (req, res) => {
   const plans = {
-    free:   { name: 'Free',   price: 0,   searchLimit: 50,    savedAds: 50,    platforms: 2  },
-    pro:    { name: 'Pro',    price: 79,  searchLimit: 9999,  savedAds: 99999, platforms: 12 },
-    agency: { name: 'Agency', price: 199, searchLimit: 99999, savedAds: 99999, platforms: 12 },
+    free:  { name: 'Free',  price: 0,   priceINR: 0,   credits: 200,   platforms: 2  },
+    pro:   { name: 'Pro',   price: 299, priceINR: 299, credits: 2000,  platforms: 5  },
+    elite: { name: 'Elite', price: 999, priceINR: 999, credits: 10000, platforms: 12 },
   };
 
   res.json({
@@ -106,6 +116,7 @@ router.get('/plan', protect, (req, res) => {
     currentPlan: req.user.plan,
     planDetails: plans[req.user.plan] || plans.free,
     allPlans:    plans,
+    creditCosts: CREDIT_COSTS,
   });
 });
 
