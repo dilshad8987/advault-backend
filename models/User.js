@@ -29,6 +29,9 @@ const userSchema = new mongoose.Schema({
   // Saved ads
   savedAds: [{ type: String }],
 
+  // Viewed ads — credit sirf pehli baar deduct hoti hai
+  viewedAdIds: [{ type: String }],
+
   // Device sessions
   devices: { type: [deviceSchema], default: [] },
 
