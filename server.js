@@ -63,9 +63,28 @@ async function connectMongoDB() {
 connectMongoDB();
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/ads',  require('./routes/ads'));
-app.use('/api/user', require('./routes/user'));
+// Safe mount — agar koi route file load fail ho, server crash na ho aur
+// exact error Railway logs mein dikhe (debugging ke liye)
+function safeMount(path, routePath) {
+  try {
+    const router = require(routePath);
+    app.use(path, router);
+    console.log(`✅ Mounted ${routePath} → ${path}`);
+  } catch (err) {
+    console.error(`❌ FAILED to mount ${routePath} → ${path}:`, err.message);
+    console.error(err.stack);
+    app.use(path, (req, res) => {
+      res.status(500).json({
+        success: false,
+        message: `Route module ${routePath} failed to load: ${err.message}`,
+      });
+    });
+  }
+}
+
+safeMount('/api/auth', './routes/auth');
+safeMount('/api/ads',  './routes/ads');
+safeMount('/api/user', './routes/user');
 
 app.get('/health', (req, res) => {
   res.json({
@@ -76,7 +95,10 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.use('*', (req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
+app.use('*', (req, res) => {
+  console.warn(`[404] ${req.method} ${req.originalUrl} — Route not found`);
+  res.status(404).json({ success: false, message: 'Route not found' });
+});
 
 app.use((err, req, res, next) => {
   console.error('Server Error:', err.message);
