@@ -514,28 +514,51 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
       return res.status(503).json({ success: false, message: 'Database connected nahi hai' });
     }
 
-    // Credit check
-    const creditCheck = checkCredits(req.user, 'ad_detail');
-    if (!creditCheck.allowed)
-      return res.status(429).json({
-        success:  false,
-        message:  'Credits khatam ho gaye.',
-        creditsRemaining: 0,
-        upgrade:  true,
-      });
+    const adId = req.params.adId;
+    const userId = req.user.id;
 
-    const ad = await TikTokAd.findOne({ ad_id: req.params.adId }).lean();
+    // Check karo — kya yeh user pehle yeh ad dekh chuka hai?
+    const { findUserById, updateUser } = require('../store/db');
+    const freshUser = await findUserById(userId);
+    const viewedAdIds = freshUser?.viewedAdIds || [];
+    const alreadyViewed = viewedAdIds.includes(adId);
+
+    if (!alreadyViewed) {
+      // Pehli baar dekh raha hai — credit check karo
+      const creditCheck = checkCredits(req.user, 'ad_detail');
+      if (!creditCheck.allowed)
+        return res.status(429).json({
+          success:  false,
+          message:  'Credits khatam ho gaye.',
+          creditsRemaining: 0,
+          upgrade:  true,
+        });
+    }
+
+    const ad = await TikTokAd.findOne({ ad_id: adId }).lean();
     if (!ad) {
       return res.status(404).json({ success: false, message: 'Ad nahi mili' });
     }
 
-    // Deduct credits + increment view count (background)
-    deductCredits(req.user.id, 'ad_detail').catch(() => {});
+    if (!alreadyViewed) {
+      // Pehli baar: credit deduct karo aur viewedAdIds mein add karo (background)
+      deductCredits(userId, 'ad_detail').catch(() => {});
+      const updatedViewed = [...viewedAdIds, adId];
+      updateUser(userId, { viewedAdIds: updatedViewed }).catch(() => {});
+    }
+
+    // View count update (background)
     TikTokAd.updateOne(
-      { ad_id: req.params.adId },
+      { ad_id: adId },
       { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
     ).catch(() => {});
-    return res.json({ success: true, source: 'mongodb', data: normalizeTikTokForFrontend(ad) });
+
+    return res.json({
+      success: true,
+      source: 'mongodb',
+      creditDeducted: !alreadyViewed,
+      data: normalizeTikTokForFrontend(ad),
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
