@@ -12,6 +12,7 @@ const PLAN_CREDITS = {
 
 const CREDIT_COSTS = {
   search:          10,
+  meta_search:     10,   // Meta dashboard ads load karne pe
   ad_detail:       30,
   save_ad:         10,
   video_download:  10,
