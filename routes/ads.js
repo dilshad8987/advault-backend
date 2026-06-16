@@ -717,6 +717,17 @@ router.get('/meta', protect, async (req, res) => {
     limit        = 20,
   } = req.query;
 
+  // ── Credit check ─────────────────────────────────────────────────────────────
+  const creditCheck = checkCredits(req.user, 'meta_search');
+  if (!creditCheck.allowed) {
+    return res.status(429).json({
+      success:          false,
+      message:          'Credits khatam ho gaye — premium ke liye upgrade karo.',
+      creditsRemaining: 0,
+      upgrade:          true,
+    });
+  }
+
   try {
     // Pehle MongoDB se try karo
     if (MetaAd && mongoose.connection.readyState === 1) {
@@ -789,7 +800,9 @@ router.get('/meta', protect, async (req, res) => {
       if (adsRaw.length > 0) {
         const normalized = adsRaw.map(normalizeForFrontend);
         console.log('[Meta Route] MongoDB se serve: ' + normalized.length + ' unique ads');
-        return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb' });
+        // ── Credit deduct (sirf tab jab actual data mile) ───────────────────────
+        const deducted = await deductCredits(req.user.id, 'meta_search');
+        return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb', creditsRemaining: deducted.remaining });
       }
 
       console.log('[Meta Route] MongoDB mein koi ad nahi — Apify fallback');
