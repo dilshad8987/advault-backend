@@ -11,12 +11,11 @@ const PLAN_CREDITS = {
 };
 
 const CREDIT_COSTS = {
-  search:          10,
-  meta_search:     10,   // Meta dashboard ads load karne pe
-  ad_detail:       30,
-  save_ad:         10,
-  video_download:  10,
-  load_more:        5,
+  search:          10,   // TikTok + Meta keyword search
+  ad_detail:       30,   // TikTok + Meta detail open (sirf pehli baar)
+  save_ad:         10,   // TikTok + Meta ad save
+  video_download:  10,   // TikTok + Meta video download
+  load_more:        5,   // TikTok + Meta load more
 };
 
 function isMongoReady() {
