@@ -717,12 +717,12 @@ router.get('/meta', protect, async (req, res) => {
     limit        = 20,
   } = req.query;
 
-  // ── Credit check ─────────────────────────────────────────────────────────────
-  const creditCheck = checkCredits(req.user, 'meta_search');
+  // ── Credit check (TikTok jaisi — search: 10 credits) ─────────────────────────
+  const creditCheck = checkCredits(req.user, 'search');
   if (!creditCheck.allowed) {
     return res.status(429).json({
       success:          false,
-      message:          'Credits khatam ho gaye — premium ke liye upgrade karo.',
+      message:          'Credits khatam ho gaye.',
       creditsRemaining: 0,
       upgrade:          true,
     });
@@ -801,7 +801,7 @@ router.get('/meta', protect, async (req, res) => {
         const normalized = adsRaw.map(normalizeForFrontend);
         console.log('[Meta Route] MongoDB se serve: ' + normalized.length + ' unique ads');
         // ── Credit deduct (sirf tab jab actual data mile) ───────────────────────
-        const deducted = await deductCredits(req.user.id, 'meta_search');
+        const deducted = await deductCredits(req.user.id, 'search');
         return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb', creditsRemaining: deducted.remaining });
       }
 
@@ -874,11 +874,67 @@ router.get('/image-proxy', async (req, res) => {
   }
 });
 
-// POST /api/ads/meta/:id/view — view count track karo
+// GET /api/ads/meta/:id — Meta ad detail + credit deduct (TikTok jaisi logic)
+router.get('/meta/:id', protect, async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1)
+      return res.status(503).json({ success: false, message: 'Database connected nahi hai' });
+
+    const libraryId = req.params.id;
+    const userId    = req.user.id;
+
+    // Kya user pehle yeh ad dekh chuka hai?
+    const freshUser    = await findUserById(userId);
+    const viewedAdIds  = freshUser?.viewedAdIds || [];
+    const alreadyViewed = viewedAdIds.includes('meta_' + libraryId);
+
+    if (!alreadyViewed) {
+      // Pehli baar — credit check karo
+      const creditCheck = checkCredits(req.user, 'ad_detail');
+      if (!creditCheck.allowed)
+        return res.status(429).json({
+          success:          false,
+          message:          'Credits khatam ho gaye.',
+          creditsRemaining: 0,
+          upgrade:          true,
+        });
+    }
+
+    const ad = MetaAd
+      ? await MetaAd.findOne({ library_id: libraryId }).lean()
+      : null;
+
+    if (!ad)
+      return res.status(404).json({ success: false, message: 'Ad nahi mili' });
+
+    if (!alreadyViewed) {
+      // Credit deduct + viewedAdIds update (background)
+      deductCredits(userId, 'ad_detail').catch(() => {});
+      const updatedViewed = [...viewedAdIds, 'meta_' + libraryId];
+      updateUser(userId, { viewedAdIds: updatedViewed }).catch(() => {});
+    }
+
+    // View count update (background)
+    MetaAd.updateOne(
+      { library_id: libraryId },
+      { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
+    ).catch(() => {});
+
+    return res.json({
+      success:       true,
+      source:        'mongodb',
+      creditDeducted: !alreadyViewed,
+      data:          normalizeForFrontend(ad),
+    });
+
+  } catch(err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/ads/meta/:id/view — legacy, sirf view count (credit nahi)
 router.post('/meta/:id/view', protect, async (req, res) => {
   try {
-    const { trackAdView } = require('../services/cleanupService');
-    trackAdView(req.params.id);
     if (MetaAd && mongoose.connection.readyState === 1) {
       await MetaAd.updateOne(
         { library_id: req.params.id },
@@ -887,7 +943,7 @@ router.post('/meta/:id/view', protect, async (req, res) => {
     }
     res.json({ success: true });
   } catch(e) {
-    res.json({ success: true }); // silently fail
+    res.json({ success: true });
   }
 });
 
@@ -992,6 +1048,21 @@ router.get('/search', protect, searchLimiter, async (req, res) => {
         const raw = tt?.data?.data?.materials || tt?.data?.materials || tt?.materials || [];
         if (Array.isArray(raw)) results.push(...raw);
       } catch (e) { console.error('TikTok search error:', e.message); }
+    }
+    if ((platform === 'meta' || platform === 'all') && MetaAd && mongoose.connection.readyState === 1) {
+      try {
+        const metaQuery = {
+          hidden: { $ne: true },
+          is_phash_duplicate: { $ne: true },
+          $or: [
+            { brand:   { $regex: keyword.trim(), $options: 'i' } },
+            { body:    { $regex: keyword.trim(), $options: 'i' } },
+            { keyword: { $regex: keyword.trim(), $options: 'i' } },
+          ],
+        };
+        const metaRaw = await MetaAd.find(metaQuery).sort({ trending_score: -1 }).limit(20).lean();
+        if (Array.isArray(metaRaw)) results.push(...metaRaw.map(normalizeForFrontend));
+      } catch (e) { console.error('Meta search error:', e.message); }
     }
 
     const deducted = await deductCredits(req.user.id, 'search');
