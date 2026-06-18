@@ -502,14 +502,13 @@ router.get('/tiktok', protect, async (req, res) => {
 
     console.log(`[TikTok] Serve: ${adsRaw.length} ads (country: ${usedCountry})`);
 
-    // ── Lock logic: credits <= threshold hone par non-viewed ads lock karo ──
-    const userCreditsRemaining = req.user.credits ?? 9999;
+    // ── Lock logic: fresh DB se credits lo (cache stale ho sakta hai) ──
+    const freshUser = await findUserById(req.user.id);
+    const userCreditsRemaining = freshUser?.credits ?? 9999;
     const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
-    let viewedSet = new Set();
-    if (isLockActive) {
-      const freshUser = await findUserById(req.user.id);
-      viewedSet = new Set(freshUser?.viewedAdIds || []);
-    }
+    const viewedSet = isLockActive
+      ? new Set((freshUser?.viewedAdIds || []).map(String))
+      : new Set();
 
     const normalizedAds = adsRaw.map(ad => {
       const normalized = normalizeTikTokForFrontend(ad);
@@ -530,6 +529,7 @@ router.get('/tiktok', protect, async (req, res) => {
       total: totalRaw,
       page: parseInt(page),
       lockActive: isLockActive,
+      creditsRemaining: userCreditsRemaining,
     });
 
   } catch (err) {
@@ -856,13 +856,13 @@ router.get('/meta', protect, async (req, res) => {
       const total = countRaw[0]?.total || 0;
 
       if (adsRaw.length > 0) {
-        // ── Lock logic: credits <= threshold hone par non-viewed ads lock karo ──
-        const userCreditsRemaining = req.user.credits ?? 9999;
+        // ── Lock logic: deducted.remaining fresh hai (abhi deduct hua) ──
+        const userCreditsRemaining = deducted.remaining ?? 9999;
         const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
         let viewedSet = new Set();
         if (isLockActive) {
           const freshUser = await findUserById(req.user.id);
-          viewedSet = new Set(freshUser?.viewedAdIds || []);
+          viewedSet = new Set((freshUser?.viewedAdIds || []).map(String));
         }
 
         const normalized = adsRaw.map(ad => {
