@@ -428,6 +428,8 @@ function normalizeTikTokForFrontend(ad) {
   };
 }
 
+const CREDIT_LOCK_THRESHOLD = 20; // Credits <= 20 hone par non-viewed ads lock ho jaayenge
+
 router.get('/tiktok', protect, async (req, res) => {
   const { country = 'US', order = 'like', period = '7', page = 1, limit = 20 } = req.query;
 
@@ -499,13 +501,35 @@ router.get('/tiktok', protect, async (req, res) => {
     const totalRaw = await TikTokAd.countDocuments(buildQuery(usedCountry === 'ALL' ? null : usedCountry));
 
     console.log(`[TikTok] Serve: ${adsRaw.length} ads (country: ${usedCountry})`);
+
+    // ── Lock logic: credits <= threshold hone par non-viewed ads lock karo ──
+    const userCreditsRemaining = req.user.credits ?? 9999;
+    const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
+    let viewedSet = new Set();
+    if (isLockActive) {
+      const freshUser = await findUserById(req.user.id);
+      viewedSet = new Set(freshUser?.viewedAdIds || []);
+    }
+
+    const normalizedAds = adsRaw.map(ad => {
+      const normalized = normalizeTikTokForFrontend(ad);
+      if (isLockActive) {
+        const adId = normalized.id || normalized.material_id || normalized.ad_id;
+        normalized.isLocked = !viewedSet.has(String(adId));
+      } else {
+        normalized.isLocked = false;
+      }
+      return normalized;
+    });
+
     return res.json({
       success: true,
       source: 'mongodb_scraped',
       country_used: usedCountry,
-      data: { materials: adsRaw.map(normalizeTikTokForFrontend) },
+      data: { materials: normalizedAds },
       total: totalRaw,
       page: parseInt(page),
+      lockActive: isLockActive,
     });
 
   } catch (err) {
@@ -832,9 +856,28 @@ router.get('/meta', protect, async (req, res) => {
       const total = countRaw[0]?.total || 0;
 
       if (adsRaw.length > 0) {
-        const normalized = adsRaw.map(normalizeForFrontend);
+        // ── Lock logic: credits <= threshold hone par non-viewed ads lock karo ──
+        const userCreditsRemaining = req.user.credits ?? 9999;
+        const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
+        let viewedSet = new Set();
+        if (isLockActive) {
+          const freshUser = await findUserById(req.user.id);
+          viewedSet = new Set(freshUser?.viewedAdIds || []);
+        }
+
+        const normalized = adsRaw.map(ad => {
+          const n = normalizeForFrontend(ad);
+          if (isLockActive) {
+            const adId = 'meta_' + (ad.library_id || n.id);
+            n.isLocked = !viewedSet.has(String(adId));
+          } else {
+            n.isLocked = false;
+          }
+          return n;
+        });
+
         console.log('[Meta Route] MongoDB se serve: ' + normalized.length + ' unique ads');
-        return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb', creditsRemaining: deducted.remaining });
+        return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb', creditsRemaining: deducted.remaining, lockActive: isLockActive });
       }
 
       console.log('[Meta Route] MongoDB mein koi ad nahi — Apify fallback');
