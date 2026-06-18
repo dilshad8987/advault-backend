@@ -272,38 +272,58 @@ function checkCredits(user, action = 'search') {
 }
 
 // Deduct credits for an action — returns { success, remaining, used }
+// Optimized: 3 DB calls → 2 DB calls (sync + fetch merged into one findOne)
 async function deductCredits(userId, action = 'search') {
   try {
     if (!isMongoReady()) return { success: false };
     const cost = CREDIT_COSTS[action] || 1;
 
-    // Pehle sync karo agar reset due hai
-    await syncCreditsIfNeeded(userId);
+    // Step 1: Ek hi call mein user fetch karo + reset check karo
+    const user = await User.findOne(
+      { firebaseUid: userId },
+      { credits: 1, creditsUsed: 1, creditsResetDate: 1, plan: 1 }
+    ).lean();
 
-    // Fetch fresh reset date after sync
-    const fresh = await User.findOne({ firebaseUid: userId }, { creditsResetDate: 1 }).lean();
-    const resetDate = fresh?.creditsResetDate;
+    if (!user) return { success: false };
 
-    // Atomic deduction — only if credits >= cost AND resetDate matches
-    const result = await User.findOneAndUpdate(
-      {
-        firebaseUid:      userId,
-        creditsResetDate: resetDate,
-        credits:          { $gte: cost },
-      },
-      {
-        $inc: { credits: -cost, creditsUsed: cost },
-        $set: { updatedAt: new Date() },
-      },
-      { new: true }
-    );
+    const resetNeeded    = isResetDue(user.creditsResetDate);
+    const planLimit      = getPlanCredits(user.plan);
+    const currentCredits = resetNeeded ? planLimit : (user.credits ?? planLimit);
 
-    if (!result) {
-      const user      = await User.findOne({ firebaseUid: userId }, { credits: 1 }).lean();
-      const remaining = user?.credits ?? 0;
-      return { success: false, remaining, insufficient: true };
+    // Credits check — agar kam hain toh reject karo
+    if (currentCredits < cost) {
+      return { success: false, remaining: currentCredits, insufficient: true };
     }
 
+    // Step 2: Atomic update — reset + deduct ek saath agar zaroori ho
+    const updateQuery = resetNeeded
+      ? {
+          $set: {
+            credits:          planLimit - cost,
+            creditsUsed:      cost,
+            creditsResetDate: getNextResetDate(),
+            updatedAt:        new Date(),
+          },
+        }
+      : {
+          $inc: { credits: -cost, creditsUsed: cost },
+          $set: { updatedAt: new Date() },
+        };
+
+    // Agar reset nahi hai: credits >= cost condition lagao (double-spend protect)
+    const matchQuery = resetNeeded
+      ? { firebaseUid: userId }
+      : { firebaseUid: userId, credits: { $gte: cost } };
+
+    const result = await User.findOneAndUpdate(matchQuery, updateQuery, { new: true });
+
+    if (!result) {
+      // Race condition: kisi aur request ne pehle deduct kar liya
+      const fresh = await User.findOne({ firebaseUid: userId }, { credits: 1 }).lean();
+      return { success: false, remaining: fresh?.credits ?? 0, insufficient: true };
+    }
+
+    console.log(`[Credits] Deducted: ${userId} -${cost} (${action}) → ${result.credits} left`);
     return {
       success:       true,
       remaining:     result.credits,
@@ -317,6 +337,8 @@ async function deductCredits(userId, action = 'search') {
 }
 
 // Sync: agar 28 din guzar gaye to credits reset karo
+// Note: deductCredits ab apne andar reset handle karta hai — yeh function
+// sirf manual/admin reset ke liye raha hai (e.g. plan upgrade pe call karo)
 async function syncCreditsIfNeeded(userId) {
   try {
     if (!isMongoReady()) return;
@@ -330,7 +352,7 @@ async function syncCreditsIfNeeded(userId) {
     user.creditsUsed      = 0;
     user.creditsResetDate = getNextResetDate(); // Aaj se agla 28 din
     await user.save();
-    console.log(`[Credits] Reset: ${userId} → ${planLimit} credits, next: ${user.creditsResetDate}`);
+    console.log(`[Credits] Manual Reset: ${userId} → ${planLimit} credits, next: ${user.creditsResetDate}`);
   } catch (err) {
     console.error('[DB] syncCreditsIfNeeded error:', err.message);
   }
