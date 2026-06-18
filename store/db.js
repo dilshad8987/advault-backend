@@ -302,6 +302,7 @@ async function deductCredits(userId, action = 'search') {
             credits:          planLimit - cost,
             creditsUsed:      cost,
             creditsResetDate: getNextResetDate(),
+            viewedAdIds:      [], // Reset pe viewed history clear — fresh start
             updatedAt:        new Date(),
           },
         }
@@ -351,8 +352,9 @@ async function syncCreditsIfNeeded(userId) {
     user.credits          = planLimit;
     user.creditsUsed      = 0;
     user.creditsResetDate = getNextResetDate(); // Aaj se agla 28 din
+    user.viewedAdIds      = []; // Reset pe viewed history clear — fresh start
     await user.save();
-    console.log(`[Credits] Manual Reset: ${userId} → ${planLimit} credits, next: ${user.creditsResetDate}`);
+    console.log(`[Credits] Manual Reset: ${userId} → ${planLimit} credits, viewedAdIds cleared, next: ${user.creditsResetDate}`);
   } catch (err) {
     console.error('[DB] syncCreditsIfNeeded error:', err.message);
   }
