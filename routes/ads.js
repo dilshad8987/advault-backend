@@ -177,7 +177,7 @@ router.get('/video/download', protect, async (req, res) => {
   const { url, filename = 'ad-video.mp4' } = req.query;
   if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
 
-  // Credit check
+  // Credit check (in-memory fast check)
   const creditCheck = checkCredits(req.user, 'video_download');
   if (!creditCheck.allowed)
     return res.status(429).json({
@@ -187,8 +187,15 @@ router.get('/video/download', protect, async (req, res) => {
       upgrade:  true,
     });
 
-  // Deduct before streaming
-  deductCredits(req.user.id, 'video_download').catch(() => {});
+  // Deduct BEFORE streaming — safe: pehle kato phir do
+  const deducted = await deductCredits(req.user.id, 'video_download');
+  if (!deducted.success)
+    return res.status(429).json({
+      success:  false,
+      message:  'Credits khatam ho gaye.',
+      creditsRemaining: deducted.remaining ?? 0,
+      upgrade:  true,
+    });
 
   try {
     const videoRes = await axios.get(decodeURIComponent(url), {
@@ -524,7 +531,7 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
     const alreadyViewed = viewedAdIds.includes(adId);
 
     if (!alreadyViewed) {
-      // Pehli baar dekh raha hai — credit check karo
+      // Pehli baar dekh raha hai — credit check karo (in-memory fast)
       const creditCheck = checkCredits(req.user, 'ad_detail');
       if (!creditCheck.allowed)
         return res.status(429).json({
@@ -535,19 +542,33 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
         });
     }
 
-    const ad = await TikTokAd.findOne({ ad_id: adId }).lean();
+    // Ad fetch + credit deduct parallel (fast + safe)
+    const [ad, deducted] = await Promise.all([
+      TikTokAd.findOne({ ad_id: adId }).lean(),
+      !alreadyViewed ? deductCredits(userId, 'ad_detail') : Promise.resolve(null),
+    ]);
+
     if (!ad) {
       return res.status(404).json({ success: false, message: 'Ad nahi mili' });
     }
 
+    // Pehli baar tha aur deduction fail — data mat do
+    if (!alreadyViewed && (!deducted || !deducted.success)) {
+      return res.status(429).json({
+        success:  false,
+        message:  'Credits khatam ho gaye.',
+        creditsRemaining: deducted?.remaining ?? 0,
+        upgrade:  true,
+      });
+    }
+
     if (!alreadyViewed) {
-      // Pehli baar: credit deduct karo aur viewedAdIds mein add karo (background)
-      deductCredits(userId, 'ad_detail').catch(() => {});
+      // viewedAdIds update — sirf tracking, background theek hai
       const updatedViewed = [...viewedAdIds, adId];
       updateUser(userId, { viewedAdIds: updatedViewed }).catch(() => {});
     }
 
-    // View count update (background)
+    // View count update (background — tracking only)
     TikTokAd.updateOne(
       { ad_id: adId },
       { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
@@ -557,6 +578,7 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
       success: true,
       source: 'mongodb',
       creditDeducted: !alreadyViewed,
+      creditsRemaining: deducted?.remaining ?? null,
       data: normalizeTikTokForFrontend(ad),
     });
   } catch (err) {
@@ -790,18 +812,28 @@ router.get('/meta', protect, async (req, res) => {
         { $count: 'total' },
       ];
 
-      const [adsRaw, countRaw] = await Promise.all([
+      // Ads fetch + count + credit deduct teen parallel (fast + safe)
+      const [adsRaw, countRaw, deducted] = await Promise.all([
         MetaAd.aggregate(pipeline),
         MetaAd.aggregate(countPipeline),
+        deductCredits(req.user.id, 'search'),
       ]);
+
+      // Deduction fail — data mat do
+      if (!deducted.success) {
+        return res.status(429).json({
+          success:          false,
+          message:          'Credits khatam ho gaye.',
+          creditsRemaining: deducted.remaining ?? 0,
+          upgrade:          true,
+        });
+      }
 
       const total = countRaw[0]?.total || 0;
 
       if (adsRaw.length > 0) {
         const normalized = adsRaw.map(normalizeForFrontend);
         console.log('[Meta Route] MongoDB se serve: ' + normalized.length + ' unique ads');
-        // ── Credit deduct (sirf tab jab actual data mile) ───────────────────────
-        const deducted = await deductCredits(req.user.id, 'search');
         return res.json({ success: true, data: normalized, total, page: parseInt(page), source: 'mongodb', creditsRemaining: deducted.remaining });
       }
 
@@ -889,7 +921,7 @@ router.get('/meta/:id', protect, async (req, res) => {
     const alreadyViewed = viewedAdIds.includes('meta_' + libraryId);
 
     if (!alreadyViewed) {
-      // Pehli baar — credit check karo
+      // Pehli baar — credit check karo (in-memory fast)
       const creditCheck = checkCredits(req.user, 'ad_detail');
       if (!creditCheck.allowed)
         return res.status(429).json({
@@ -900,31 +932,43 @@ router.get('/meta/:id', protect, async (req, res) => {
         });
     }
 
-    const ad = MetaAd
-      ? await MetaAd.findOne({ library_id: libraryId }).lean()
-      : null;
+    // Ad fetch + credit deduct parallel (fast + safe)
+    const [ad, deducted] = await Promise.all([
+      MetaAd ? MetaAd.findOne({ library_id: libraryId }).lean() : Promise.resolve(null),
+      !alreadyViewed ? deductCredits(userId, 'ad_detail') : Promise.resolve(null),
+    ]);
 
     if (!ad)
       return res.status(404).json({ success: false, message: 'Ad nahi mili' });
 
+    // Pehli baar tha aur deduction fail — data mat do
+    if (!alreadyViewed && (!deducted || !deducted.success)) {
+      return res.status(429).json({
+        success:          false,
+        message:          'Credits khatam ho gaye.',
+        creditsRemaining: deducted?.remaining ?? 0,
+        upgrade:          true,
+      });
+    }
+
     if (!alreadyViewed) {
-      // Credit deduct + viewedAdIds update (background)
-      deductCredits(userId, 'ad_detail').catch(() => {});
+      // viewedAdIds update — sirf tracking, background theek hai
       const updatedViewed = [...viewedAdIds, 'meta_' + libraryId];
       updateUser(userId, { viewedAdIds: updatedViewed }).catch(() => {});
     }
 
-    // View count update (background)
+    // View count update (background — tracking only)
     MetaAd.updateOne(
       { library_id: libraryId },
       { $inc: { view_count: 1 }, $set: { last_viewed: new Date() } }
     ).catch(() => {});
 
     return res.json({
-      success:       true,
-      source:        'mongodb',
+      success:        true,
+      source:         'mongodb',
       creditDeducted: !alreadyViewed,
-      data:          normalizeForFrontend(ad),
+      creditsRemaining: deducted?.remaining ?? null,
+      data:           normalizeForFrontend(ad),
     });
 
   } catch(err) {
@@ -1104,9 +1148,26 @@ router.post('/save', protect, async (req, res) => {
       return res.status(409).json({ success: false, message: 'Pehle se saved hai' });
 
     savedAds.push({ id: adId, folder: folderName, savedAt: new Date().toISOString(), ...adData });
-    await updateUser(req.user.id, { savedAds });
-    deductCredits(req.user.id, 'save_ad').catch(() => {});
-    res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: savedAds.length });
+
+    // Save + deduct parallel (fast + safe)
+    const [, deducted] = await Promise.all([
+      updateUser(req.user.id, { savedAds }),
+      deductCredits(req.user.id, 'save_ad'),
+    ]);
+
+    if (!deducted.success) {
+      // Deduction fail — undo save
+      const rollback = savedAds.filter(a => a.id !== adId);
+      updateUser(req.user.id, { savedAds: rollback }).catch(() => {});
+      return res.status(429).json({
+        success:  false,
+        message:  'Credits khatam ho gaye.',
+        creditsRemaining: deducted.remaining ?? 0,
+        upgrade:  true,
+      });
+    }
+
+    res.json({ success: true, message: 'Ad save ho gayi!', totalSaved: savedAds.length, creditsRemaining: deducted.remaining });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
