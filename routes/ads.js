@@ -428,7 +428,7 @@ function normalizeTikTokForFrontend(ad) {
   };
 }
 
-const CREDIT_LOCK_THRESHOLD = 20; // Credits <= 20 hone par non-viewed ads lock ho jaayenge
+const CREDIT_LOCK_THRESHOLD = 20; // Credits <= 20 hone par SAB ads lock ho jaayenge (viewed/unviewed dono) — sirf dikhenge, khulenge nahi
 
 router.get('/tiktok', protect, async (req, res) => {
   const { country = 'US', order = 'like', period = '7', page = 1, limit = 20 } = req.query;
@@ -502,22 +502,14 @@ router.get('/tiktok', protect, async (req, res) => {
 
     console.log(`[TikTok] Serve: ${adsRaw.length} ads (country: ${usedCountry})`);
 
-    // ── Lock logic: fresh DB se credits lo (cache stale ho sakta hai) ──
+    // ── Lock logic: credits <= threshold hone par SAB ads lock (viewed bhi) ──
     const freshUser = await findUserById(req.user.id);
     const userCreditsRemaining = freshUser?.credits ?? 9999;
     const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
-    const viewedSet = isLockActive
-      ? new Set((freshUser?.viewedAdIds || []).map(String))
-      : new Set();
 
     const normalizedAds = adsRaw.map(ad => {
       const normalized = normalizeTikTokForFrontend(ad);
-      if (isLockActive) {
-        const adId = normalized.id || normalized.material_id || normalized.ad_id;
-        normalized.isLocked = !viewedSet.has(String(adId));
-      } else {
-        normalized.isLocked = false;
-      }
+      normalized.isLocked = isLockActive;
       return normalized;
     });
 
@@ -548,9 +540,22 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
     const adId = req.params.adId;
     const userId = req.user.id;
 
-    // Check karo — kya yeh user pehle yeh ad dekh chuka hai?
+    // Fresh user fetch — credits + viewed dono ek hi call mein
     const { findUserById, updateUser } = require('../store/db');
     const freshUser = await findUserById(userId);
+    const userCreditsNow = freshUser?.credits ?? 9999;
+
+    // ── Lock check: credits <= threshold hone par koi bhi ad open nahi hoga ──
+    if (userCreditsNow <= CREDIT_LOCK_THRESHOLD) {
+      return res.status(402).json({
+        success:          false,
+        message:          'Credits khatam ho gaye — upgrade karo ya reset ka wait karo.',
+        creditsRemaining: userCreditsNow,
+        locked:           true,
+        upgrade:          true,
+      });
+    }
+
     const viewedAdIds = freshUser?.viewedAdIds || [];
     const alreadyViewed = viewedAdIds.includes(adId);
 
@@ -856,23 +861,13 @@ router.get('/meta', protect, async (req, res) => {
       const total = countRaw[0]?.total || 0;
 
       if (adsRaw.length > 0) {
-        // ── Lock logic: deducted.remaining fresh hai (abhi deduct hua) ──
+        // ── Lock logic: deducted.remaining fresh hai (abhi deduct hua), SAB ads lock ──
         const userCreditsRemaining = deducted.remaining ?? 9999;
         const isLockActive = userCreditsRemaining <= CREDIT_LOCK_THRESHOLD;
-        let viewedSet = new Set();
-        if (isLockActive) {
-          const freshUser = await findUserById(req.user.id);
-          viewedSet = new Set((freshUser?.viewedAdIds || []).map(String));
-        }
 
         const normalized = adsRaw.map(ad => {
           const n = normalizeForFrontend(ad);
-          if (isLockActive) {
-            const adId = 'meta_' + (ad.library_id || n.id);
-            n.isLocked = !viewedSet.has(String(adId));
-          } else {
-            n.isLocked = false;
-          }
+          n.isLocked = isLockActive;
           return n;
         });
 
@@ -960,6 +955,19 @@ router.get('/meta/:id', protect, async (req, res) => {
 
     // Kya user pehle yeh ad dekh chuka hai?
     const freshUser    = await findUserById(userId);
+    const userCreditsNow = freshUser?.credits ?? 9999;
+
+    // ── Lock check: credits <= threshold hone par koi bhi ad open nahi hoga ──
+    if (userCreditsNow <= CREDIT_LOCK_THRESHOLD) {
+      return res.status(402).json({
+        success:          false,
+        message:          'Credits khatam ho gaye — upgrade karo ya reset ka wait karo.',
+        creditsRemaining: userCreditsNow,
+        locked:           true,
+        upgrade:          true,
+      });
+    }
+
     const viewedAdIds  = freshUser?.viewedAdIds || [];
     const alreadyViewed = viewedAdIds.includes('meta_' + libraryId);
 
@@ -1172,6 +1180,19 @@ router.post('/save', protect, async (req, res) => {
   try {
     const { adId, adData, folderName = 'Default' } = req.body;
     if (!adId) return res.status(400).json({ success: false, message: 'Ad ID zaroori hai' });
+
+    // ── Lock check: credits <= threshold hone par save bhi block ──
+    const freshUserForLock = await findUserById(req.user.id);
+    const userCreditsNow = freshUserForLock?.credits ?? 9999;
+    if (userCreditsNow <= CREDIT_LOCK_THRESHOLD) {
+      return res.status(402).json({
+        success:          false,
+        message:          'Credits khatam ho gaye — upgrade karo ya reset ka wait karo.',
+        creditsRemaining: userCreditsNow,
+        locked:           true,
+        upgrade:          true,
+      });
+    }
 
     // Credit check
     const creditCheck = checkCredits(req.user, 'save_ad');
