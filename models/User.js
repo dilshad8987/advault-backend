@@ -11,6 +11,16 @@ const refreshTokenSchema = new mongoose.Schema({
   expiresAt: { type: Date,   required: true },
 }, { _id: false });
 
+const savedAdSchema = new mongoose.Schema({
+  id:       { type: String, required: true },
+  folder:   { type: String, default: 'Default' },
+  savedAt:  { type: Date,   default: Date.now },
+  title:    { type: String, default: '' },
+  brand:    { type: String, default: '' },
+  cover:    { type: String, default: '' },
+  platform: { type: String, default: 'tiktok' },
+}, { _id: false, strict: false }); // strict:false — adData se aane wale extra fields bhi store ho jayein
+
 const userSchema = new mongoose.Schema({
   firebaseUid: { type: String, required: true, unique: true, index: true },
   name:        { type: String, required: true, trim: true },
@@ -27,7 +37,7 @@ const userSchema = new mongoose.Schema({
   searchResetDate: { type: String, default: '' },
 
   // Saved ads
-  savedAds: [{ type: String }],
+  savedAds: { type: [savedAdSchema], default: [] },
 
   // Viewed ads — credit sirf pehli baar deduct hoti hai
   viewedAdIds: [{ type: String }],
