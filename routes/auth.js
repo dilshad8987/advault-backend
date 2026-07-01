@@ -64,20 +64,20 @@ router.post('/register', registerLimiter, async (req, res) => {
 
     // Block 1: Device fingerprint pe already ek bhi account hai
     if (existingAccts.length >= 1)
-      return res.status(403).json({ success: false, message: 'This device already has an account. Only one account per device is allowed.' });
+      return res.status(403).json({ success: false, message: 'Already Registered.' });
 
     // Block 2: Device pe active login session hai toh register band
     const { getActiveSessionByDevice, getAccountsByIp } = require('../store/db');
     const activeSession = await getActiveSessionByDevice(fingerprint);
     if (activeSession)
-      return res.status(403).json({ success: false, message: 'An account is already logged in on this device. Please logout first.' });
+      return res.status(403).json({ success: false, message: 'Already Registered.' });
 
     // Block 3: IP pe already ek account hai toh block
     const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     if (clientIp) {
       const ipAccts = await getAccountsByIp(clientIp);
       if (ipAccts.length >= 1)
-        return res.status(403).json({ success: false, message: 'An account is already registered from this network.' });
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
     }
 
     let firebaseUser;
