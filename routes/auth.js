@@ -5,6 +5,7 @@ const express = require('express');
 const router  = express.Router();
 
 const admin = require('../utils/firebase');
+const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
 const {
   generateAccessToken,
   generateRefreshToken,
@@ -40,7 +41,7 @@ const { sendResetEmail, sendLoginAlertEmail } = require('../services/emailServic
 
 // ─── REGISTER ─────────────────────────────────────────────────────────────────
 // POST /api/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   try {
     const rawBody = sanitizeInput(req.body);
     const { name, email, password } = rawBody;
@@ -60,8 +61,24 @@ router.post('/register', async (req, res) => {
 
     const fingerprint   = extractFingerprint(req);
     const existingAccts = await getAccountsByDevice(fingerprint);
-    if (existingAccts.length >= 3)
-      return res.status(403).json({ success: false, message: 'Max accounts reached on this device.' });
+
+    // Block 1: Device fingerprint pe already ek bhi account hai
+    if (existingAccts.length >= 1)
+      return res.status(403).json({ success: false, message: 'This device already has an account. Only one account per device is allowed.' });
+
+    // Block 2: Device pe active login session hai toh register band
+    const { getActiveSessionByDevice, getAccountsByIp } = require('../store/db');
+    const activeSession = await getActiveSessionByDevice(fingerprint);
+    if (activeSession)
+      return res.status(403).json({ success: false, message: 'An account is already logged in on this device. Please logout first.' });
+
+    // Block 3: IP pe already ek account hai toh block
+    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    if (clientIp) {
+      const ipAccts = await getAccountsByIp(clientIp);
+      if (ipAccts.length >= 1)
+        return res.status(403).json({ success: false, message: 'An account is already registered from this network.' });
+    }
 
     let firebaseUser;
     try {
@@ -77,10 +94,11 @@ router.post('/register', async (req, res) => {
     }
 
     await createUser({
-      firebaseUid: firebaseUser.uid,
-      name:        name.trim(),
-      email:       email.toLowerCase().trim(),
-      plan:        'free',
+      firebaseUid:    firebaseUser.uid,
+      name:           name.trim(),
+      email:          email.toLowerCase().trim(),
+      plan:           'free',
+      registrationIp: clientIp || '',
     });
 
     const payload      = { id: firebaseUser.uid, email: firebaseUser.email, plan: 'free' };
@@ -104,7 +122,7 @@ router.post('/register', async (req, res) => {
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     const rawBody = sanitizeInput(req.body);
     const { email, password } = rawBody;
