@@ -46,7 +46,7 @@ async function findUserByEmail(email) {
   }
 }
 
-async function createUser({ firebaseUid, name, email, plan = 'free' }) {
+async function createUser({ firebaseUid, name, email, plan = 'free', registrationIp = '' }) {
   try {
     if (!isMongoReady()) throw new Error('MongoDB connected nahi hai');
     const planLimit = getPlanCredits(plan);
@@ -55,6 +55,7 @@ async function createUser({ firebaseUid, name, email, plan = 'free' }) {
       name,
       email,
       plan,
+      registrationIp,
       credits:          planLimit,
       creditsUsed:      0,
       creditsResetDate: getNextResetDate(), // Aaj se 28 din baad
@@ -360,6 +361,41 @@ async function syncCreditsIfNeeded(userId) {
   }
 }
 
+
+// ─── One Account Per Device / IP ──────────────────────────────────────────────
+
+// Check karo kya device pe koi active refresh token wala session hai
+async function getActiveSessionByDevice(fingerprint) {
+  try {
+    if (!isMongoReady()) return null;
+    const now = new Date();
+    // Devices array mein fingerprint hai AND valid refreshToken bhi hai
+    const user = await User.findOne({
+      'devices.fingerprint': fingerprint,
+      'refreshTokens.expiresAt': { $gt: now },
+    }, { firebaseUid: 1, email: 1 }).lean();
+    return user || null;
+  } catch (err) {
+    console.error('[DB] getActiveSessionByDevice error:', err.message);
+    return null;
+  }
+}
+
+// Check karo kya is IP pe pehle se koi account registered hai
+async function getAccountsByIp(ip) {
+  try {
+    if (!isMongoReady()) return [];
+    const users = await User.find(
+      { 'registrationIp': ip },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+    return users || [];
+  } catch (err) {
+    console.error('[DB] getAccountsByIp error:', err.message);
+    return [];
+  }
+}
+
 // Legacy — kept for backward compat, routes will be updated to use credits
 function checkSearchLimit(user) {
   return checkCredits(user, 'search');
@@ -388,6 +424,8 @@ module.exports = {
   getDeviceCount,
   getUserDeviceCount: getDeviceCount,
   getAccountsByDevice, // alias — backward compat
+  getActiveSessionByDevice,
+  getAccountsByIp,
 
   // Credit System
   checkCredits,
