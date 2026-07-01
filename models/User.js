@@ -42,6 +42,9 @@ const userSchema = new mongoose.Schema({
   // Viewed ads — credit sirf pehli baar deduct hoti hai
   viewedAdIds: [{ type: String }],
 
+  // Registration IP — ek IP se sirf ek account
+  registrationIp: { type: String, default: '' },
+
   // Device sessions
   devices: { type: [deviceSchema], default: [] },
 
