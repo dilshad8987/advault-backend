@@ -39,6 +39,17 @@ const bcrypt         = require('bcryptjs');
 const Otp            = require('../models/Otp');
 const { sendResetEmail, sendLoginAlertEmail } = require('../services/emailService');
 
+// ─── Gmail dot-trick normalizer ───────────────────────────────────────────────
+// a.b.c+anything@gmail.com  →  abc@gmail.com
+function normalizeGmail(email) {
+  const lower = (email || '').toLowerCase().trim();
+  const [local, domain] = lower.split('@');
+  if (domain !== 'gmail.com') return lower;
+  const withoutPlus = local.split('+')[0];
+  const withoutDots = withoutPlus.replace(/\./g, '');
+  return `${withoutDots}@gmail.com`;
+}
+
 // ─── REGISTER ─────────────────────────────────────────────────────────────────
 // POST /api/auth/register
 router.post('/register', registerLimiter, async (req, res) => {
@@ -59,26 +70,74 @@ router.post('/register', registerLimiter, async (req, res) => {
     if (vpnResult.detected)
       return res.status(403).json({ success: false, message: 'VPN/Proxy not allowed.' });
 
-    const fingerprint   = extractFingerprint(req);
-    const existingAccts = await getAccountsByDevice(fingerprint);
+    // ── Fingerprint v2 extract ──────────────────────────────────────────────
+    const fp = extractFingerprint(req);
+    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    const normalizedEmail = normalizeGmail(email);
 
-    // Block 1: Device fingerprint pe already ek bhi account hai
+    const {
+      getAccountsByFingerprint,
+      getAccountsByServerHash,
+      getAccountsByClientHash,
+      getAccountsByClientId,
+      getAccountsByNormalizedEmail,
+      getAccountsByDevice,
+      getActiveSessionByDevice,
+      getAccountsByIp,
+    } = require('../store/db');
+
+    // ── 7-layer duplicate check ────────────────────────────────────────────────
+    // Check 1: Combined fingerprint (exact device match)
+    if (fp.combined) {
+      const byFp = await getAccountsByFingerprint(fp.combined);
+      if (byFp.length >= 1)
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
+    }
+
+    // Check 2: Server hash (same browser+OS, client signals bypass kiya toh bhi)
+    if (fp.serverHash) {
+      const byServer = await getAccountsByServerHash(fp.serverHash);
+      if (byServer.length >= 1)
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
+    }
+
+    // Check 3: Client hash (same hardware — browser change kiya toh bhi)
+    if (fp.clientHash && fp.hasClientSignals) {
+      const byClient = await getAccountsByClientHash(fp.clientHash);
+      if (byClient.length >= 1)
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
+    }
+
+    // Check 4: x-device-id UUID (frontend localStorage — sabse reliable)
+    const clientId = req.headers['x-device-id'] || '';
+    if (clientId) {
+      const byClientId = await getAccountsByClientId(clientId);
+      if (byClientId.length >= 1)
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
+    }
+
+    // Check 5: Normalized email (a.b@gmail.com = ab@gmail.com trick block)
+    const byNormEmail = await getAccountsByNormalizedEmail(normalizedEmail);
+    if (byNormEmail.length >= 1)
+      return res.status(403).json({ success: false, message: 'Already Registered.' });
+
+    // Check 6: Legacy device fingerprint (old accounts ke liye)
+    const legacyFp = fp.primary;
+    const existingAccts = await getAccountsByDevice(legacyFp);
     if (existingAccts.length >= 1)
       return res.status(403).json({ success: false, message: 'Already Registered.' });
 
-    // Block 2: Device pe active login session hai toh register band
-    const { getActiveSessionByDevice, getAccountsByIp } = require('../store/db');
-    const activeSession = await getActiveSessionByDevice(fingerprint);
+    // Check 7: Active session + IP
+    const activeSession = await getActiveSessionByDevice(legacyFp);
     if (activeSession)
       return res.status(403).json({ success: false, message: 'Already Registered.' });
 
-    // Block 3: IP pe already ek account hai toh block
-    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     if (clientIp) {
       const ipAccts = await getAccountsByIp(clientIp);
       if (ipAccts.length >= 1)
         return res.status(403).json({ success: false, message: 'Already Registered.' });
     }
+    // ─────────────────────────────────────────────────────────────────────────
 
     let firebaseUser;
     try {
@@ -94,18 +153,23 @@ router.post('/register', registerLimiter, async (req, res) => {
     }
 
     await createUser({
-      firebaseUid:    firebaseUser.uid,
-      name:           name.trim(),
-      email:          email.toLowerCase().trim(),
-      plan:           'free',
-      registrationIp: clientIp || '',
+      firebaseUid:             firebaseUser.uid,
+      name:                    name.trim(),
+      email:                   email.toLowerCase().trim(),
+      plan:                    'free',
+      registrationIp:          clientIp || '',
+      registrationFingerprint: fp.combined || '',
+      registrationServerHash:  fp.serverHash || '',
+      registrationClientHash:  fp.hasClientSignals ? (fp.clientHash || '') : '',
+      registrationClientId:    clientId || '',
+      registrationEmail:       normalizedEmail,
     });
 
     const payload      = { id: firebaseUser.uid, email: firebaseUser.email, plan: 'free' };
     const accessToken  = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
     await storeRefreshToken(refreshToken, firebaseUser.uid);
-    await registerDevice(firebaseUser.uid, fingerprint);
+    await registerDevice(firebaseUser.uid, fp.primary);
 
     return res.status(201).json({
       success: true,
@@ -284,13 +348,60 @@ router.post('/google', async (req, res) => {
     let user = await findUserById(uid);
 
     if (!user) {
+      // ── Naye Google user ke liye bhi fingerprint checks ──────────────────
+      const fp = extractFingerprint(req);
+      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      const clientId = req.headers['x-device-id'] || '';
+      const normalizedEmail = normalizeGmail(email);
+
+      const {
+        getAccountsByFingerprint, getAccountsByServerHash, getAccountsByClientHash,
+        getAccountsByClientId, getAccountsByNormalizedEmail, getAccountsByIp,
+      } = require('../store/db');
+
+      if (fp.combined) {
+        const byFp = await getAccountsByFingerprint(fp.combined);
+        if (byFp.length >= 1)
+          return res.status(403).json({ success: false, message: 'Already Registered.' });
+      }
+      if (fp.serverHash) {
+        const byServer = await getAccountsByServerHash(fp.serverHash);
+        if (byServer.length >= 1)
+          return res.status(403).json({ success: false, message: 'Already Registered.' });
+      }
+      if (fp.clientHash && fp.hasClientSignals) {
+        const byClient = await getAccountsByClientHash(fp.clientHash);
+        if (byClient.length >= 1)
+          return res.status(403).json({ success: false, message: 'Already Registered.' });
+      }
+      if (clientId) {
+        const byClientId = await getAccountsByClientId(clientId);
+        if (byClientId.length >= 1)
+          return res.status(403).json({ success: false, message: 'Already Registered.' });
+      }
+      const byNormEmail = await getAccountsByNormalizedEmail(normalizedEmail);
+      if (byNormEmail.length >= 1)
+        return res.status(403).json({ success: false, message: 'Already Registered.' });
+      if (clientIp) {
+        const ipAccts = await getAccountsByIp(clientIp);
+        if (ipAccts.length >= 1)
+          return res.status(403).json({ success: false, message: 'Already Registered.' });
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       await createUser({
-        firebaseUid: uid,
-        name:        googleName || email.split('@')[0],
-        email:       email.toLowerCase(),
-        plan:        'free',
-        provider:    'google',
-        photoURL:    picture || null,
+        firebaseUid:             uid,
+        name:                    googleName || email.split('@')[0],
+        email:                   email.toLowerCase(),
+        plan:                    'free',
+        provider:                'google',
+        photoURL:                picture || null,
+        registrationIp:          clientIp || '',
+        registrationFingerprint: fp.combined || '',
+        registrationServerHash:  fp.serverHash || '',
+        registrationClientHash:  fp.hasClientSignals ? (fp.clientHash || '') : '',
+        registrationClientId:    clientId || '',
+        registrationEmail:       normalizedEmail,
       });
       user = await findUserById(uid);
     }
