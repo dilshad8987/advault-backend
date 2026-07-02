@@ -115,10 +115,54 @@ async function getTikTokVideoInfo(tiktokUrl) {
   }
 }
 
+// ─── SSRF Protection — allowed URL origins ───────────────────────────────────
+const ALLOWED_VIDEO_HOSTS = [
+  'r2.dev',
+  'pub-',                          // Cloudflare R2 public buckets
+  'tiktokcdn.com',
+  'tiktokv.com',
+  'musical.ly',
+  'p16-sign.tiktokcdn-us.com',
+  'p19-sign.tiktokcdn-us.com',
+  'p77-sign.tiktokcdn-us.com',
+  'p16-sign-va.tiktokcdn.com',
+  'p16-sign-sg.tiktokcdn.com',
+  'v19-webapp.tiktok.com',
+  'cdn.advault.in',                // AdVault own CDN
+];
+
+function isSafeVideoUrl(rawUrl) {
+  try {
+    const decoded = decodeURIComponent(rawUrl);
+    const parsed  = new URL(decoded);
+    // Only https allowed — no http, no file://, no ftp etc.
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    // Block internal/private IPs and localhost
+    const blocked = [
+      'localhost', '127.', '0.0.0.0', '169.254.',  // AWS metadata
+      '10.', '172.16.', '172.17.', '172.18.', '172.19.',
+      '172.20.', '172.21.', '172.22.', '172.23.',
+      '172.24.', '172.25.', '172.26.', '172.27.',
+      '172.28.', '172.29.', '172.30.', '172.31.',
+      '192.168.', '::1', 'metadata.google',
+    ];
+    if (blocked.some(b => host.startsWith(b) || host.includes(b))) return false;
+    // Must match an allowed host pattern
+    return ALLOWED_VIDEO_HOSTS.some(allowed => host.includes(allowed));
+  } catch {
+    return false;
+  }
+}
+
 // ─── Video Stream Proxy ───────────────────────────────────────────────────────
 router.get('/video/stream', async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  // SSRF Protection — sirf allowed hosts se fetch karo
+  if (!isSafeVideoUrl(url))
+    return res.status(400).json({ success: false, message: 'Invalid video URL.' });
 
   const decodedUrlCheck = decodeURIComponent(url);
   const isR2 = decodedUrlCheck.includes('r2.dev') || decodedUrlCheck.includes('pub-');
@@ -176,6 +220,10 @@ router.get('/video/stream', async (req, res) => {
 router.get('/video/download', protect, async (req, res) => {
   const { url, filename = 'ad-video.mp4' } = req.query;
   if (!url) return res.status(400).json({ success: false, message: 'URL zaroori hai' });
+
+  // SSRF Protection
+  if (!isSafeVideoUrl(url))
+    return res.status(400).json({ success: false, message: 'Invalid video URL.' });
 
   // Credit check (in-memory fast check)
   const creditCheck = checkCredits(req.user, 'video_download');
@@ -618,7 +666,7 @@ router.get('/tiktok/:adId', protect, async (req, res) => {
 // ─── TikTok Stats ─────────────────────────────────────────────────────────────
 
 // ─── Debug: MongoDB data check ────────────────────────────────────────────────
-router.get('/debug/tiktok', async (req, res) => {
+router.get('/debug/tiktok', protect, async (req, res) => {
   try {
     const total      = await TikTokAd.countDocuments();
     const withR2     = await TikTokAd.countDocuments({ r2_video_url: { $ne: '' } });
@@ -1096,12 +1144,17 @@ router.get('/meta/brand/:brandName', protect, async (req, res) => {
 
     if (!brandName) return res.status(400).json({ success: false, message: 'Brand name chahiye' });
 
+    // ReDoS protection — max 100 chars, alphanumeric + common brand chars only
+    if (brandName.length > 100)
+      return res.status(400).json({ success: false, message: 'Brand name too long.' });
+    const safeBrand = brandName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
     if (!MetaAd || mongoose.connection.readyState !== 1) {
       return res.json({ success: true, data: [], total: 0 });
     }
 
     const query = {
-      brand: { $regex: `^${brandName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+      brand: { $regex: `^${safeBrand}$`, $options: 'i' },
       hidden: { $ne: true },
       is_phash_duplicate: { $ne: true },
     };
@@ -1328,7 +1381,7 @@ router.get('/trending/creators', protect, async (req, res) => {
 });
 
 // ─── Debug ────────────────────────────────────────────────────────────────────
-router.get('/debug-api', async (req, res) => {
+router.get('/debug-api', protect, async (req, res) => {
   try {
     // Apify se test fetch
     const result = await searchTikTokAds({ country: 'US', order: 'like', period: '30' });
