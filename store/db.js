@@ -46,7 +46,10 @@ async function findUserByEmail(email) {
   }
 }
 
-async function createUser({ firebaseUid, name, email, plan = 'free', registrationIp = '' }) {
+async function createUser({ firebaseUid, name, email, plan = 'free', registrationIp = '',
+  registrationFingerprint = '', registrationServerHash = '',
+  registrationClientHash = '', registrationClientId = '', registrationEmail = '',
+  provider = 'email', photoURL = null }) {
   try {
     if (!isMongoReady()) throw new Error('MongoDB connected nahi hai');
     const planLimit = getPlanCredits(plan);
@@ -56,9 +59,14 @@ async function createUser({ firebaseUid, name, email, plan = 'free', registratio
       email,
       plan,
       registrationIp,
+      registrationFingerprint,
+      registrationServerHash,
+      registrationClientHash,
+      registrationClientId,
+      registrationEmail,
       credits:          planLimit,
       creditsUsed:      0,
-      creditsResetDate: getNextResetDate(), // Aaj se 28 din baad
+      creditsResetDate: getNextResetDate(),
     });
     return user.toObject();
   } catch (err) {
@@ -70,9 +78,15 @@ async function createUser({ firebaseUid, name, email, plan = 'free', registratio
 async function updateUser(firebaseUid, updates) {
   try {
     if (!isMongoReady()) return false;
+    // Security: plan field ko sirf dedicated admin/payment route se change hona chahiye
+    // Direct updateUser se plan upgrade prevent karo
+    const { plan, firebaseUid: _uid, email, registrationIp,
+            registrationFingerprint, registrationServerHash,
+            registrationClientHash, registrationClientId,
+            registrationEmail, ...safeUpdates } = updates;
     await User.updateOne(
       { firebaseUid },
-      { $set: { ...updates, updatedAt: new Date() } }
+      { $set: { ...safeUpdates, updatedAt: new Date() } }
     );
     return true;
   } catch (err) {
@@ -369,7 +383,6 @@ async function getActiveSessionByDevice(fingerprint) {
   try {
     if (!isMongoReady()) return null;
     const now = new Date();
-    // Devices array mein fingerprint hai AND valid refreshToken bhi hai
     const user = await User.findOne({
       'devices.fingerprint': fingerprint,
       'refreshTokens.expiresAt': { $gt: now },
@@ -392,6 +405,78 @@ async function getAccountsByIp(ip) {
     return users || [];
   } catch (err) {
     console.error('[DB] getAccountsByIp error:', err.message);
+    return [];
+  }
+}
+
+// ─── Fingerprint v2 duplicate checks ──────────────────────────────────────────
+
+// Combined hash match — exact device
+async function getAccountsByFingerprint(combinedHash) {
+  try {
+    if (!isMongoReady() || !combinedHash) return [];
+    return await User.find(
+      { registrationFingerprint: combinedHash },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+  } catch (err) {
+    console.error('[DB] getAccountsByFingerprint error:', err.message);
+    return [];
+  }
+}
+
+// Server hash match — same browser+OS even if client signals missing
+async function getAccountsByServerHash(serverHash) {
+  try {
+    if (!isMongoReady() || !serverHash) return [];
+    return await User.find(
+      { registrationServerHash: serverHash },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+  } catch (err) {
+    console.error('[DB] getAccountsByServerHash error:', err.message);
+    return [];
+  }
+}
+
+// Client hash match — same hardware (canvas/webgl/screen) even if browser changed
+async function getAccountsByClientHash(clientHash) {
+  try {
+    if (!isMongoReady() || !clientHash) return [];
+    return await User.find(
+      { registrationClientHash: clientHash },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+  } catch (err) {
+    console.error('[DB] getAccountsByClientHash error:', err.message);
+    return [];
+  }
+}
+
+// x-device-id UUID match — frontend localStorage UUID
+async function getAccountsByClientId(clientId) {
+  try {
+    if (!isMongoReady() || !clientId) return [];
+    return await User.find(
+      { registrationClientId: clientId },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+  } catch (err) {
+    console.error('[DB] getAccountsByClientId error:', err.message);
+    return [];
+  }
+}
+
+// Normalized email match — Gmail dots trick block (a.b@gmail.com = ab@gmail.com)
+async function getAccountsByNormalizedEmail(normalizedEmail) {
+  try {
+    if (!isMongoReady() || !normalizedEmail) return [];
+    return await User.find(
+      { registrationEmail: normalizedEmail },
+      { firebaseUid: 1, email: 1 }
+    ).lean();
+  } catch (err) {
+    console.error('[DB] getAccountsByNormalizedEmail error:', err.message);
     return [];
   }
 }
@@ -426,6 +511,12 @@ module.exports = {
   getAccountsByDevice, // alias — backward compat
   getActiveSessionByDevice,
   getAccountsByIp,
+  // Fingerprint v2
+  getAccountsByFingerprint,
+  getAccountsByServerHash,
+  getAccountsByClientHash,
+  getAccountsByClientId,
+  getAccountsByNormalizedEmail,
 
   // Credit System
   checkCredits,
