@@ -25,7 +25,12 @@ app.use(cors({
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-device-id'],
+  allowedHeaders: [
+    'Content-Type', 'Authorization',
+    'x-device-id',
+    'x-fp-canvas', 'x-fp-webgl', 'x-fp-screen',
+    'x-fp-tz', 'x-fp-cpu', 'x-fp-mem', 'x-fp-touch',
+  ],
   credentials: true,
 }));
 
@@ -76,7 +81,9 @@ function safeMount(path, routePath) {
     app.use(path, (req, res) => {
       res.status(500).json({
         success: false,
-        message: `Route module ${routePath} failed to load: ${err.message}`,
+        message: process.env.NODE_ENV === 'production'
+          ? 'Internal server error'
+          : `Route module ${routePath} failed to load: ${err.message}`,
       });
     });
   }
