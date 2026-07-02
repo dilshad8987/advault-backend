@@ -45,6 +45,13 @@ const userSchema = new mongoose.Schema({
   // Registration IP — ek IP se sirf ek account
   registrationIp: { type: String, default: '' },
 
+  // Registration fingerprint — permanent record (combined + parts)
+  registrationFingerprint: { type: String, default: '', index: true }, // combined hash
+  registrationServerHash:  { type: String, default: '', index: true }, // server-only hash (VPN bypass detect)
+  registrationClientHash:  { type: String, default: '', index: true }, // client hardware hash
+  registrationClientId:    { type: String, default: '', index: true }, // x-device-id UUID
+  registrationEmail:       { type: String, default: '', index: true }, // normalized email
+
   // Device sessions
   devices: { type: [deviceSchema], default: [] },
 
